@@ -13,7 +13,8 @@
       "owner_label": "owner:artem",
       "invitation_id": 339332626,
       "repository_status": "invitation_pending",
-      "project_role": "WRITER"
+      "project_role": "WRITER",
+      "assignment_status": "awaiting_invitation_acceptance"
     },
     {
       "name": "Максим",
@@ -22,16 +23,17 @@
       "owner_label": "owner:maxim",
       "invitation_id": 339332630,
       "repository_status": "invitation_pending",
-      "project_role": "WRITER"
+      "project_role": "WRITER",
+      "assignment_status": "awaiting_invitation_acceptance"
     },
     {
       "name": "Юра",
       "github": "dnndjowow",
       "node_id": "U_kgDODXmJdw",
       "owner_label": "owner:yura",
-      "invitation_id": 339332634,
-      "repository_status": "invitation_pending",
-      "project_role": "WRITER"
+      "repository_status": "active",
+      "project_role": "WRITER",
+      "assignment_status": "assigned"
     },
     {
       "name": "Иван",
@@ -40,7 +42,8 @@
       "owner_label": "owner:ivan",
       "invitation_id": 339332637,
       "repository_status": "invitation_pending",
-      "project_role": "WRITER"
+      "project_role": "WRITER",
+      "assignment_status": "awaiting_invitation_acceptance"
     }
   ]
 }
