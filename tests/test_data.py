@@ -97,6 +97,23 @@ class PreprocessorTransformTest(unittest.TestCase):
         pd.testing.assert_frame_equal(a, b)
         pd.testing.assert_frame_equal(original, copy)
 
+    def test_value_or_missing_column_is_kept(self):
+        # ревью: [1.0, NaN] удалялся как константа, хотя пропуск полностью определял класс
+        df = pd.DataFrame({"measured": [1.0, np.nan] * 50})
+        pre = TabularPreprocessor().fit(df)
+        self.assertEqual(pre.feature_names_, ["measured"])
+        self.assertEqual(TabularPreprocessor().fit(pd.DataFrame({"c": ["x", None] * 5})).feature_names_, ["c"])
+
+    def test_integer_categories_match_across_text_and_float_files(self):
+        # ревью: '1' в train (object) и 1.0 в test (float) не совпадали
+        pre = TabularPreprocessor().fit(pd.DataFrame({"code": ["A", "1", "2", "1"]}))
+        out = pre.transform(pd.DataFrame({"code": [1.0, 2.0, np.nan]}))
+        self.assertEqual(out["code"].tolist()[:2], ["1", "2"])
+        self.assertTrue(pd.isna(out.loc[2, "code"]))
+        self.assertEqual(pre.unseen_share_, {})
+        pre.transform(pd.DataFrame({"code": [1.5]}))
+        self.assertEqual(pre.unseen_share_, {"code": 1.0})  # 1.5 действительно новая категория
+
     def test_mixed_type_column_becomes_text_categories(self):
         df = pd.DataFrame({"m": [1, "a", 1, "a", 2.5]})
         pre = TabularPreprocessor().fit(df)

@@ -91,6 +91,16 @@ class SyntheticProfileTest(unittest.TestCase):
         profile = mp.profile_task(root / "task/task.md")
         self.assertTrue(profile["files"]["train"]["path"].endswith("train.csv"))
 
+    def test_drift_side_is_recorded(self):
+        train = pd.DataFrame({"t": [5, 6, 7], "u": [1, 2, 3], "w": [1, 2, 3]})
+        test = pd.DataFrame({"t": [8, 9], "u": [0, -1], "w": [0, 9]})
+        tt = mp.compare_train_test(train, test, ["t", "u", "w"])
+        self.assertEqual(tt["out_of_train_range_side"], {"t": "above", "u": "below", "w": "both"})
+
+    def test_unseen_categories_ignore_int_float_text(self):
+        tt = mp.compare_train_test(pd.DataFrame({"c": ["A", "1"]}), pd.DataFrame({"c": [1.0, 1.0]}), ["c"])
+        self.assertEqual(tt["unseen_categories_share"], {})
+
     def test_text_is_short_and_contains_key_facts(self):
         profile = self.profile(kind="multiclass")
         text = mp.format_profile(profile, max_columns=3)

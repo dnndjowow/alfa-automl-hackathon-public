@@ -16,6 +16,7 @@ import pandas as pd
 
 import ml_io
 import ml_schema
+from ml_data import category_text
 
 _TIME_HINT = re.compile(r"year|date|time|month|week|day|period|quarter|дата|год|месяц|период", re.IGNORECASE)
 _HIGH_CARDINALITY = 50
@@ -94,7 +95,7 @@ def profile_target(y: pd.Series, task_type: str) -> dict:
 
 
 def compare_train_test(train: pd.DataFrame, test: pd.DataFrame, columns, top=10) -> dict:
-    unseen, out_of_range, missing_shift = {}, {}, {}
+    unseen, out_of_range, side, missing_shift = {}, {}, {}, {}
     for col in columns:
         if col not in train.columns or col not in test.columns:
             continue
@@ -102,12 +103,13 @@ def compare_train_test(train: pd.DataFrame, test: pd.DataFrame, columns, top=10)
         if pd.api.types.is_numeric_dtype(a) and pd.api.types.is_numeric_dtype(b):
             bn = b.dropna()
             if len(bn) and a.notna().any():
-                share = float(((bn < a.min()) | (bn > a.max())).mean())
-                if share > 0:
-                    out_of_range[col] = _round(share)
+                below, above = float((bn < a.min()).mean()), float((bn > a.max()).mean())
+                if below + above > 0:
+                    out_of_range[col] = _round(below + above)
+                    side[col] = "above" if below == 0 else "below" if above == 0 else "both"
         else:
-            known = set(a.dropna().astype(str))
-            bs = b.dropna().astype(str)
+            known = set(category_text(a).dropna())
+            bs = category_text(b).dropna()
             if len(bs):
                 share = float((~bs.isin(known)).mean())
                 if share > 0:
@@ -119,9 +121,11 @@ def compare_train_test(train: pd.DataFrame, test: pd.DataFrame, columns, top=10)
     def best(d):
         return dict(sorted(d.items(), key=lambda kv: -kv[1])[:top])
 
+    ranged = best(out_of_range)
     return {
         "unseen_categories_share": best(unseen),
-        "out_of_train_range_share": best(out_of_range),
+        "out_of_train_range_share": ranged,
+        "out_of_train_range_side": {c: side[c] for c in ranged},  # above / below / both
         "missing_frac_shift": best(missing_shift),
     }
 

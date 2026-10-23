@@ -103,6 +103,12 @@ class LabelCodec:
         return pd.DataFrame(proba, columns=[str(c) for c in self.classes_], index=index)
 
 
+def category_text(series: pd.Series) -> pd.Series:
+    """Значения категории как текст; целые числа без «.0», чтобы 1 из одного файла и 1.0 из другого совпали."""
+    text = series.astype(str).where(series.notna())
+    return text.str.replace(r"^(-?\d+)\.0$", r"\1", regex=True)
+
+
 class TabularPreprocessor:
     """Приводит признаки к виду для градиентного бустинга.
 
@@ -124,12 +130,13 @@ class TabularPreprocessor:
             s = X[col]
             if s.isna().all():
                 self.dropped_[col] = "all_missing"
-            elif self.drop_constant and s.nunique(dropna=True) <= 1:
+            elif self.drop_constant and s.nunique(dropna=False) <= 1:
+                # «одно значение или пропуск» не константа: сам факт пропуска может быть сигналом
                 self.dropped_[col] = "constant"
             elif pd.api.types.is_numeric_dtype(s) or pd.api.types.is_bool_dtype(s):
                 self.numeric_cols_.append(col)
             else:
-                counts = s.dropna().astype(str).value_counts()
+                counts = category_text(s).dropna().value_counts()
                 order = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
                 self.categories_[col] = [k for k, _ in order]
                 self.categorical_cols_.append(col)
@@ -156,7 +163,7 @@ class TabularPreprocessor:
                 values = X[col]
             if col in self.categorical_cols_:
                 present = values.notna()
-                text = values.astype(str).where(present)
+                text = category_text(values)
                 cat = pd.Categorical(text, categories=self.categories_[col])
                 unseen = float((present & pd.isna(cat)).mean()) if len(X) else 0.0
                 if unseen > 0:
