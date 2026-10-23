@@ -144,6 +144,60 @@ class SyntheticToolsTest(unittest.TestCase):
     def test_rounds_from_failed_result(self):
         self.assertIsNone(mt.rounds_from(mt.EvalResult(status="error")))
 
+    def test_rounds_from_mean_by_default_and_largest_train_on_request(self):
+        result = mt.EvalResult(status="ok", best_iterations=[62, 727, 29], train_sizes=[11000, 22000, 35000])
+        self.assertEqual(mt.rounds_from(result, margin=1.0), 273)  # проверка на скрытых годах: среднее точнее
+        self.assertEqual(mt.rounds_from(result, margin=1.0, how="largest_train"), 29)
+        equal = mt.EvalResult(status="ok", best_iterations=[10, 20, 30, 40, 1000], train_sizes=[800] * 5)
+        self.assertEqual(mt.rounds_from(equal, margin=1.0, how="largest_train"), 30)
+        with self.assertRaises(ValueError):
+            mt.rounds_from(result, how="max")
+
+    def test_oof_index_points_into_the_original_train_after_subsample(self):
+        # ревью: после подвыборки индексы указывали на строки уменьшенной таблицы
+        split, profile, _ = self.prepare(kind="regression", n_train=1000)
+        result = mt.train_eval(split, profile, subsample=0.5, **FAST)
+        self.assertEqual(result.status, "ok", result.error)
+        self.assertGreater(result.oof_index.max(), 600)
+        truth = split.y_train.to_numpy()[result.oof_index]
+        rmse = float(np.sqrt(np.mean((truth - result.oof_pred) ** 2)))
+        self.assertAlmostEqual(rmse, result.oof_score, places=6)
+
+    def test_exhausted_budget_skips_remaining_folds(self):
+        # ревью: каждая следующая часть получала минимум секунду даже без остатка бюджета
+        split, profile, _ = self.prepare(kind="regression", n_train=2000)
+        plan = {"strategy": "kfold", "n_splits": 5, "classification": False}
+        real_time, calls = mt.time.time, [0]
+
+        def clock():  # первые вызовы — старт и первая часть, затем время «прыгает» за бюджет
+            calls[0] += 1
+            return real_time() + (0.0 if calls[0] <= 3 else 1000.0)
+
+        with mock.patch.object(mt.time, "time", clock):
+            result = mt.train_eval(split, profile, validation=plan, time_budget=10, **FAST)
+        self.assertEqual(result.status, "ok", result.error)
+        self.assertEqual(len(result.fold_scores), 1)
+        self.assertTrue(any("части 2–5 не посчитаны" in n for n in result.notes), result.notes)
+        self.assertFalse(any("пропущена" in n for n in result.notes), result.notes)
+
+    def test_effective_validation_is_reported(self):
+        split, profile, _ = self.prepare(kind="multiclass", n_train=600)
+        result = mt.train_eval(split, profile, **FAST)
+        self.assertIn("effective", result.validation)
+        self.assertEqual(result.validation["effective"]["n_splits"], len(result.fold_scores))
+
+    def test_fit_predict_without_rounds_uses_early_stopping(self):
+        # ревью: без n_rounds обучалось max_rounds раундов без остановки
+        split, profile, _ = self.prepare(kind="regression", n_train=600)
+        final = mt.fit_predict(split, profile, max_rounds=3000, learning_rate=0.3, n_jobs=2)
+        self.assertEqual(final["status"], "ok", final.get("error"))
+        self.assertLess(final["n_rounds"], 3000)
+        self.assertTrue(any("подобрано" in n for n in final["notes"]))
+
+    def test_fit_predict_rejects_unknown_transform(self):
+        split, profile, _ = self.prepare(kind="regression")
+        self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")
+
 
 @unittest.skipUnless(DATA.exists(), "публичные данные не скачаны в data/public")
 class PublicToolsSmokeTest(unittest.TestCase):

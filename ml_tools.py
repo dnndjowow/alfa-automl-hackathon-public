@@ -33,6 +33,7 @@ class EvalResult:
     oof_score: Optional[float] = None  # метрика по всем проверенным строкам сразу
     fold_scores: list = field(default_factory=list)
     best_iterations: list = field(default_factory=list)
+    train_sizes: list = field(default_factory=list)  # строк обучения в каждой посчитанной части
     seconds: float = 0.0
     validation: dict = field(default_factory=dict)
     params: dict = field(default_factory=dict)
@@ -50,6 +51,7 @@ class EvalResult:
             "status": self.status, "model": self.model, "task_type": self.task_type, "metric": self.metric,
             "higher_is_better": self.higher_is_better, "score": num(self.score), "oof_score": num(self.oof_score),
             "fold_scores": [num(s) for s in self.fold_scores], "best_iterations": list(self.best_iterations),
+            "train_sizes": list(self.train_sizes),
             "seconds": round(self.seconds, 2), "validation": self.validation, "params": self.params,
             "notes": self.notes, "error": self.error,
         }
@@ -115,20 +117,27 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
                     higher_is_better=resolved.higher_is_better, params=dict(params or {}))
         X, y = split.X_train, split.y_train
         notes = []
+        positions = np.arange(len(X))  # позиции строк в исходном split.X_train
         if subsample is not None and subsample < 1.0:
-            keep = np.sort(np.random.default_rng(seed).choice(len(X), max(2, int(len(X) * subsample)), replace=False))
-            X, y = X.iloc[keep].reset_index(drop=True), y.iloc[keep].reset_index(drop=True)
+            positions = np.sort(np.random.default_rng(seed).choice(len(X), max(2, int(len(X) * subsample)), replace=False))
+            X, y = X.iloc[positions].reset_index(drop=True), y.iloc[positions].reset_index(drop=True)
             notes.append(f"использована случайная подвыборка train: {len(X)} строк")
         codec, target = _prepare_target(y, kind, target_transform)
         n_classes = len(codec.classes_) if codec else 0
-        plan = validation or ml_validation.suggest_validation(profile, X)
+        plan = dict(validation or ml_validation.suggest_validation(profile, X))
         splits = ml_validation.make_splits(plan, X, target if kind == "classification" else None, seed=seed)
+        plan["effective"] = splits.effective()
 
-        fold_scores, iterations = [], []
+        fold_scores, iterations, sizes = [], [], []
         oof_index, oof_parts = [], []
         for number, (tr, va) in enumerate(splits, 1):
-            left = len(splits) - number + 1
-            budget = None if time_budget is None else max(1.0, (time_budget - (time.time() - started)) / left)
+            budget = None
+            if time_budget is not None:
+                remaining = time_budget - (time.time() - started)
+                if remaining <= 0:
+                    notes.append(f"бюджет времени исчерпан: части {number}–{len(splits)} не посчитаны")
+                    break
+                budget = remaining / (len(splits) - number + 1)
             try:
                 pre = TabularPreprocessor()
                 X_tr, X_va = pre.fit_transform(X.iloc[tr]), pre.transform(X.iloc[va])
@@ -142,6 +151,7 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
                 pred = _inverse(raw, kind, target_transform)
                 fold_scores.append(_score(resolved, truth, pred, kind, n_classes))
                 iterations.append(boosting.best_iteration_)
+                sizes.append(len(tr))
                 oof_index.append(va)
                 oof_parts.append(pred)
                 if boosting.stopped_by_time_:
@@ -157,21 +167,57 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
         return EvalResult(
             status="ok", score=float(np.mean(fold_scores)),
             oof_score=_score(resolved, truth_all, oof, kind, n_classes),
-            fold_scores=[float(s) for s in fold_scores], best_iterations=iterations,
+            fold_scores=[float(s) for s in fold_scores], best_iterations=iterations, train_sizes=sizes,
             seconds=time.time() - started, validation=plan, notes=notes,
             classes=[str(c) for c in codec.classes_] if codec else None,
-            oof_index=index, oof_pred=oof, **base,
+            oof_index=positions[index], oof_pred=oof, **base,
         )
     except Exception as error:
         return _error(f"{type(error).__name__}: {error}", model=model, seconds=time.time() - started,
                       notes=[traceback.format_exc(limit=3)])
 
 
-def rounds_from(result: EvalResult, margin: float = 1.15) -> Optional[int]:
-    """Число раундов для финального обучения на всём train: среднее лучших итераций с запасом."""
+def rounds_from(result: EvalResult, margin: float = 1.15, how: str = "mean") -> Optional[int]:
+    """Число раундов для финального обучения на всём train.
+
+    how="mean" (по умолчанию): среднее лучших итераций по частям. how="largest_train": медиана
+    по частям, где обучающих строк не меньше 90% от максимума. На скрытых годах регрессии
+    (24.10.2026) среднее дало RMSE 47.0 против 47.8 у largest_train в среднем по четырём проверкам,
+    поэтому оно остаётся по умолчанию. margin — запас на то, что данных в финале больше.
+    """
     if result.status != "ok" or not result.best_iterations:
         return None
-    return max(1, int(round(float(np.mean(result.best_iterations)) * margin)))
+    best = np.asarray(result.best_iterations, dtype=float)
+    if how == "largest_train" and len(result.train_sizes) == len(best):
+        sizes = np.asarray(result.train_sizes, dtype=float)
+        value = float(np.median(best[sizes >= 0.9 * sizes.max()]))
+    elif how in ("largest_train", "mean"):
+        value = float(np.mean(best))
+    else:
+        raise ValueError(f"неизвестный способ {how!r}: mean или largest_train")
+    return max(1, int(round(value * margin)))
+
+
+def _auto_rounds(X, target, kind, profile, n_classes, model, params, n_jobs, seed, max_rounds,
+                 learning_rate, time_budget, margin=1.15):
+    """Подобрать число раундов ранней остановкой на каждой части валидации и усреднить (как rounds_from)."""
+    started = time.time()
+    plan = ml_validation.suggest_validation(profile, X)
+    splits = ml_validation.make_splits(plan, X, target if kind == "classification" else None, seed=seed)
+    iterations = []
+    for number, (tr, va) in enumerate(splits):
+        budget = None
+        if time_budget is not None:
+            remaining = time_budget - (time.time() - started)
+            if remaining <= 0 and iterations:
+                break
+            budget = max(remaining, 0.0) / (len(splits) - number)
+        pre = TabularPreprocessor()
+        boosting = BoostingModel(model, kind, n_classes=n_classes, params=params, n_jobs=n_jobs, seed=seed,
+                                 max_rounds=max_rounds, learning_rate=learning_rate, time_budget=budget)
+        boosting.fit(pre.fit_transform(X.iloc[tr]), target[tr], pre.transform(X.iloc[va]), target[va])
+        iterations.append(boosting.best_iteration_)
+    return max(1, int(round(float(np.mean(iterations)) * margin))), plan["strategy"]
 
 
 def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_rounds: Optional[int] = None,
@@ -180,24 +226,37 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
                 time_budget: Optional[float] = None, max_rounds: int = 3000, learning_rate: float = 0.05) -> dict:
     """Обучить на всём train и предсказать test.
 
-    Регрессия: pred (n,) в исходной шкале таргета. Классификация: proba (n, K) и classes —
-    порядок столбцов; pred содержит метки классов (по наибольшей вероятности)."""
+    n_rounds — число раундов (обычно rounds_from(результат train_eval)). Если не задано, оно
+    подбирается ранней остановкой на одной части валидации; обучать max_rounds без остановки
+    не будем. Регрессия: pred (n,) в исходной шкале таргета. Классификация: proba (n, K)
+    и classes — порядок столбцов; pred содержит метки классов (по наибольшей вероятности)."""
     started = time.time()
     try:
         kind, _ = _resolve_task_and_metric(profile, task_type, None)
+        if target_transform not in TARGET_TRANSFORMS:
+            raise ValueError(f"преобразование таргета {target_transform!r} не поддержано: {TARGET_TRANSFORMS}")
         if not isinstance(split.y_train, pd.Series):
             raise ValueError("несколько таргетов пока не поддержаны")
         codec, target = _prepare_target(split.y_train, kind, target_transform)
+        n_classes = len(codec.classes_) if codec else None
+        notes = []
+        if n_rounds is None:
+            n_rounds, scheme = _auto_rounds(split.X_train, target, kind, profile, n_classes, model, params,
+                                            n_jobs, seed, max_rounds, learning_rate,
+                                            None if time_budget is None else time_budget / 2)
+            notes.append(f"n_rounds={n_rounds} подобрано ранней остановкой (схема {scheme})")
         pre = TabularPreprocessor()
         X_tr, X_te = pre.fit_transform(split.X_train), pre.transform(split.X_test)
+        left = None if time_budget is None else max(0.0, time_budget - (time.time() - started))
         boosting = BoostingModel(
-            model, kind, n_classes=len(codec.classes_) if codec else None, params=params, n_jobs=n_jobs,
-            seed=seed, max_rounds=max_rounds, learning_rate=learning_rate, time_budget=time_budget,
+            model, kind, n_classes=n_classes, params=params, n_jobs=n_jobs,
+            seed=seed, max_rounds=max_rounds, learning_rate=learning_rate, time_budget=left,
         )
         boosting.fit(X_tr, target, n_rounds=n_rounds)
         raw = boosting.predict(X_te)
         out = {"status": "ok", "model": model, "task_type": kind, "n_rounds": boosting.best_iteration_,
-               "seconds": time.time() - started, "warnings": list(pre.warnings_) + list(split.warnings)}
+               "seconds": time.time() - started, "notes": notes,
+               "warnings": list(pre.warnings_) + list(split.warnings)}
         if kind == "regression":
             out["pred"] = _inverse(raw, kind, target_transform)
         else:
