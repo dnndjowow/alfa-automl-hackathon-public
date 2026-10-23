@@ -166,7 +166,7 @@ def build_profile(data: ml_io.TaskData) -> dict:
         frame = getattr(data, role)
         if path is not None and frame is not None:
             files[role] = {
-                "path": str(path.relative_to(data.files.task_dir)),
+                "path": ml_io.display_path(path, data.files.task_dir),
                 "rows": int(len(frame)), "cols": int(frame.shape[1]),
             }
     profile = {

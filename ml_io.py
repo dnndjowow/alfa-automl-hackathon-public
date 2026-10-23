@@ -55,18 +55,46 @@ def read_task_text(task_md) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
 
 
+_OUTPUT_TOKENS = {"pred", "preds", "prediction", "predictions", "submission", "oof", "output", "result", "results"}
+_DICT_TOKENS = {"dict", "dictionary", "description", "descriptions"}
+
+
 def classify_csv(path) -> Optional[str]:
-    """Роль файла по имени; None, если имя не распознано (в том числе submission.csv)."""
-    stem = Path(path).stem.lower()
-    if "sample" in stem and "sub" in stem:
+    """Роль файла по словам в имени; None, если имя не распознано (в том числе submission.csv).
+
+    Сравниваются целые слова, а не подстроки: predictions.csv не словарь, train_subsample.csv
+    не sample_submission. Файлы с признаками выходных данных (pred, oof, output) роли не получают.
+    """
+    tokens = [t for t in re.split(r"[^a-z0-9]+", Path(path).stem.lower()) if t]
+    if "sample" in tokens and any(t.startswith("sub") for t in tokens):
         return "sample_submission"
-    if "dict" in stem:
+    if "".join(tokens) in ("samplesubmission", "samplesub"):
+        return "sample_submission"
+    if _OUTPUT_TOKENS & set(tokens):
+        return None
+    if _DICT_TOKENS & set(tokens):
         return "data_dictionary"
-    if stem.startswith("train"):
+    if "train" in tokens:
         return "train"
-    if stem.startswith("test"):
+    if "test" in tokens:
         return "test"
     return None
+
+
+def display_path(path: Path, task_dir: Path) -> str:
+    """Путь относительно каталога задачи, а для файла вне его — абсолютный."""
+    try:
+        return str(Path(path).relative_to(task_dir))
+    except ValueError:
+        return str(path)
+
+
+def _rank(path: Path, task_dir: Path):
+    """Ближе к task.md — лучше; файлы вне каталога задачи идут после файлов внутри."""
+    try:
+        return (0, len(path.relative_to(task_dir).parts), str(path))
+    except ValueError:
+        return (1, len(path.parts), str(path))
 
 
 def referenced_csv_paths(text: str, task_dir: Path) -> list:
@@ -117,14 +145,14 @@ def find_task_files(task_md) -> TaskFiles:
         if not options:
             files.warnings.append(f"файл роли {role!r} не найден")
             continue
-        options = sorted(options, key=lambda p: (len(p.relative_to(task_dir).parts), str(p)))
+        options = sorted(options, key=lambda p: _rank(p, task_dir))
         files.paths[role] = options[0]
         if len(options) > 1:
             files.warnings.append(
-                f"для роли {role!r} несколько файлов, выбран {options[0].relative_to(task_dir)}"
+                f"для роли {role!r} несколько файлов, выбран {display_path(options[0], task_dir)}"
             )
     for path in files.extra_csv:
-        files.warnings.append(f"роль файла {path.relative_to(task_dir)} не распознана")
+        files.warnings.append(f"роль файла {display_path(path, task_dir)} не распознана")
     return files
 
 

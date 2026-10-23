@@ -74,10 +74,43 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
     def test_recognised_names_with_suffixes(self):
         self.assertEqual(ml_io.classify_csv("train_data.csv"), "train")
         self.assertEqual(ml_io.classify_csv("Test.CSV"), "test")
+        self.assertEqual(ml_io.classify_csv("x_test.csv"), "test")
         self.assertEqual(ml_io.classify_csv("sample_submission.csv"), "sample_submission")
+        self.assertEqual(ml_io.classify_csv("SampleSubmission.csv"), "sample_submission")
         self.assertEqual(ml_io.classify_csv("data_dictionary.csv"), "data_dictionary")
+        self.assertEqual(ml_io.classify_csv("column_descriptions.csv"), "data_dictionary")
         self.assertIsNone(ml_io.classify_csv("submission.csv"))
         self.assertIsNone(ml_io.classify_csv("weather.csv"))
+
+    def test_substrings_do_not_assign_roles(self):
+        # ревью: 'dict' внутри 'predictions', 'sample'+'sub' внутри 'subsample'
+        for name in ("predictions.csv", "oof_predictions.csv", "train_predictions.csv", "test_preds.csv"):
+            self.assertIsNone(ml_io.classify_csv(name), name)
+        self.assertEqual(ml_io.classify_csv("train_subsample.csv"), "train")
+        self.assertIsNone(ml_io.classify_csv("contest.csv"))
+
+    def test_prediction_file_is_not_taken_as_dictionary(self):
+        task, root = self.make(kind="regression")
+        (root / "data/participants/data_dictionary.csv").unlink()
+        (root / "data/participants/oof_predictions.csv").write_text("id,y\n1,0.5\n", encoding="utf-8")
+        files = ml_io.find_task_files(task.task_md)
+        self.assertIsNone(files.paths["data_dictionary"])
+
+    def test_csv_outside_task_dir_relative_and_absolute(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "data").mkdir()
+        (root / "task").mkdir()
+        for name in ("train", "test"):
+            pd.DataFrame({"id": [1, 2], "x": [1.0, 2.0]}).to_csv(root / "data" / f"{name}.csv", index=False)
+        for text in ("Файлы: `../data/train.csv`, `../data/test.csv`",
+                     f"Файлы: `{root}/data/train.csv`, `{root}/data/test.csv`"):
+            (root / "task" / "task.md").write_text(text, encoding="utf-8")
+            data = ml_io.load_task(root / "task" / "task.md")
+            self.assertEqual(len(data.train), 2)
+            self.assertEqual(data.files.paths["test"], (root / "data" / "test.csv").resolve())
+            self.assertTrue(ml_io.display_path(data.files.paths["train"], data.files.task_dir).endswith("train.csv"))
 
     def test_only_empty_cell_is_missing(self):
         tmp = tempfile.TemporaryDirectory()

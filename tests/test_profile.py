@@ -79,6 +79,18 @@ class SyntheticProfileTest(unittest.TestCase):
         profile = mp.profile_task(task.task_md)
         self.assertEqual(profile["task"]["type"], "unknown")
 
+    def test_profile_with_files_outside_task_dir(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "data").mkdir()
+        (root / "task").mkdir()
+        pd.DataFrame({"id": range(60), "x": range(60), "y": range(60)}).to_csv(root / "data/train.csv", index=False)
+        pd.DataFrame({"id": range(60, 80), "x": range(20)}).to_csv(root / "data/test.csv", index=False)
+        (root / "task/task.md").write_text("`../data/train.csv` `../data/test.csv`", encoding="utf-8")
+        profile = mp.profile_task(root / "task/task.md")
+        self.assertTrue(profile["files"]["train"]["path"].endswith("train.csv"))
+
     def test_text_is_short_and_contains_key_facts(self):
         profile = self.profile(kind="multiclass")
         text = mp.format_profile(profile, max_columns=3)
