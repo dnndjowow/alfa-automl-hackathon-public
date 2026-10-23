@@ -113,5 +113,5 @@
   ],
   "active_blocks": 14,
   "filter": "label:\"plan:current\"",
-  "legacy_issues": 56
+  "deadline_kind": "internal_team_deadline"
 }
