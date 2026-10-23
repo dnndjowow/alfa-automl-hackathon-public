@@ -1,0 +1,46 @@
+name: Задача команды
+description: Конкретный результат, входные материалы и критерии приёмки
+title: "[P0/P1] Краткое название"
+body:
+  - type: dropdown
+    id: owner
+    attributes:
+      label: Ответственный
+      options:
+        - Иван
+        - Юра
+        - Егор / PM
+        - Артём
+        - Максим
+    validations:
+      required: true
+  - type: textarea
+    id: goal
+    attributes:
+      label: Цель и что сделать
+      description: Какой результат нужен и какие действия входят в задачу.
+    validations:
+      required: true
+  - type: textarea
+    id: inputs
+    attributes:
+      label: Входные файлы и зависимости
+      description: Ссылки на материалы, код и задачи, от которых зависит работа.
+    validations:
+      required: true
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: Готово, когда
+      description: Проверяемые критерии; приложить команду запуска и ожидаемый результат.
+      placeholder: "- [ ] ..."
+    validations:
+      required: true
+  - type: input
+    id: deadline
+    attributes:
+      label: Срок / ближайшая контрольная точка
+      description: Дата и время по МСК либо явно оговорённый срок от T0.
+    validations:
+      required: true
+
