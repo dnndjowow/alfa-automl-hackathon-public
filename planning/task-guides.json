@@ -1,0 +1,75 @@
+{
+  "10": {
+    "path": "docs/tasks/10-release.md",
+    "steps": 8,
+    "issue_number": 10,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/10"
+  },
+  "11": {
+    "path": "docs/tasks/11-data-report.md",
+    "steps": 8,
+    "issue_number": 11,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/11"
+  },
+  "12": {
+    "path": "docs/tasks/12-test-report.md",
+    "steps": 8,
+    "issue_number": 12,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/12"
+  },
+  "01": {
+    "path": "docs/tasks/01-interfaces.md",
+    "steps": 7,
+    "issue_number": 1,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/1"
+  },
+  "02": {
+    "path": "docs/tasks/02-data-pipeline.md",
+    "steps": 8,
+    "issue_number": 2,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/2"
+  },
+  "03": {
+    "path": "docs/tasks/03-ml-tools.md",
+    "steps": 8,
+    "issue_number": 3,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/3"
+  },
+  "04": {
+    "path": "docs/tasks/04-llm-agent.md",
+    "steps": 8,
+    "issue_number": 4,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/4"
+  },
+  "05": {
+    "path": "docs/tasks/05-autoresearch.md",
+    "steps": 8,
+    "issue_number": 5,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/5"
+  },
+  "06": {
+    "path": "docs/tasks/06-submission.md",
+    "steps": 8,
+    "issue_number": 6,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/6"
+  },
+  "07": {
+    "path": "docs/tasks/07-environment.md",
+    "steps": 8,
+    "issue_number": 7,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/7"
+  },
+  "08": {
+    "path": "docs/tasks/08-universality.md",
+    "steps": 7,
+    "issue_number": 8,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/8"
+  },
+  "09": {
+    "path": "docs/tasks/09-quality.md",
+    "steps": 8,
+    "issue_number": 9,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/9"
+  }
+}
+

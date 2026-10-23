@@ -23,7 +23,8 @@
       "Есть примеры описания регрессии и классификации; формат допускает несколько целевых колонок и вероятности.",
       "Названия site_eui, attack_cat и id не зашиты как обязательные для любой задачи."
     ],
-    "deps": []
+    "deps": [],
+    "guide_path": "docs/tasks/01-interfaces.md"
   },
   {
     "key": "02",
@@ -50,7 +51,8 @@
     ],
     "deps": [
       "01"
-    ]
+    ],
+    "guide_path": "docs/tasks/02-data-pipeline.md"
   },
   {
     "key": "03",
@@ -78,7 +80,8 @@
     "deps": [
       "01",
       "02"
-    ]
+    ],
+    "guide_path": "docs/tasks/03-ml-tools.md"
   },
   {
     "key": "04",
@@ -106,7 +109,8 @@
     ],
     "deps": [
       "01"
-    ]
+    ],
+    "guide_path": "docs/tasks/04-llm-agent.md"
   },
   {
     "key": "05",
@@ -133,7 +137,8 @@
     "deps": [
       "03",
       "04"
-    ]
+    ],
+    "guide_path": "docs/tasks/05-autoresearch.md"
   },
   {
     "key": "06",
@@ -162,7 +167,8 @@
       "02",
       "03",
       "04"
-    ]
+    ],
+    "guide_path": "docs/tasks/06-submission.md"
   },
   {
     "key": "07",
@@ -188,7 +194,8 @@
       "Проверены ограничения 8 CPU / 32 GB RAM, отсутствие GPU и 30 GB диска; готовый образ организаторы не предоставляют.",
       "Назначена первая интеграционная сверка не позже T0 + 8 часов; собирать части начинаем до завершения всех улучшений."
     ],
-    "deps": []
+    "deps": [],
+    "guide_path": "docs/tasks/07-environment.md"
   },
   {
     "key": "08",
@@ -215,7 +222,8 @@
     "deps": [
       "05",
       "06"
-    ]
+    ],
+    "guide_path": "docs/tasks/08-universality.md"
   },
   {
     "key": "09",
@@ -243,7 +251,8 @@
     "deps": [
       "05",
       "06"
-    ]
+    ],
+    "guide_path": "docs/tasks/09-quality.md"
   },
   {
     "key": "10",
@@ -271,7 +280,8 @@
     "deps": [
       "06",
       "07"
-    ]
+    ],
+    "guide_path": "docs/tasks/10-release.md"
   },
   {
     "key": "11",
@@ -296,7 +306,8 @@
       "Непроверенные предположения отделены от фактов.",
       "Задача не блокирует загрузку данных и обучение у Юры."
     ],
-    "deps": []
+    "deps": [],
+    "guide_path": "docs/tasks/11-data-report.md"
   },
   {
     "key": "12",
@@ -324,7 +335,7 @@
     "deps": [
       "06",
       "07"
-    ]
+    ],
+    "guide_path": "docs/tasks/12-test-report.md"
   }
 ]
-

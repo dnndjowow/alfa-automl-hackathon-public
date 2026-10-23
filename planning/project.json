@@ -31,18 +31,23 @@
   "views": [
     {
       "name": "Все задачи",
-      "layout": "BOARD_LAYOUT"
+      "layout": "BOARD_LAYOUT",
+      "number": 1
     },
     {
       "name": "Иван",
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"owner:ivan\""
+      "filter": "label:\"owner:ivan\"",
+      "number": 2
     },
     {
       "name": "Юра",
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"owner:yura\""
+      "filter": "label:\"owner:yura\"",
+      "number": 3
     }
   ],
-  "invite_collaborators": false
+  "invite_collaborators": false,
+  "url": "https://github.com/users/selecteg12/projects/2",
+  "number": 2
 }

@@ -29,6 +29,14 @@ body:
     validations:
       required: true
   - type: textarea
+    id: steps
+    attributes:
+      label: Пошаговый план
+      description: С чего начать, что выполнить по порядку и какой промежуточный результат получить.
+      placeholder: "1. ..."
+    validations:
+      required: true
+  - type: textarea
     id: acceptance
     attributes:
       label: Готово, когда
