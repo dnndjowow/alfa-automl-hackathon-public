@@ -65,10 +65,11 @@ class BoostingModel:
         rounds = n_rounds or self.max_rounds
         deadline = time.time() + self.time_budget if self.time_budget is not None else None
         started = time.time()
+        self._time_stopped = False  # ставят callbacks, только когда действительно прервали обучение
         getattr(self, f"_fit_{self.name}")(X, y, X_valid if has_valid else None,
                                            np.asarray(y_valid) if has_valid else None, rounds, deadline)
         self.fit_seconds_ = time.time() - started
-        self.stopped_by_time_ = deadline is not None and time.time() >= deadline
+        self.stopped_by_time_ = self._time_stopped
         return self
 
     def predict(self, X: pd.DataFrame) -> np.ndarray:
@@ -113,9 +114,21 @@ class BoostingModel:
         if Xv is not None:
             callbacks.append(lgb.early_stopping(self.early_stopping_rounds, verbose=False))
         if deadline is not None:
+            best = {"iteration": None, "score": None, "results": []}
+
             def stop_on_time(env):
+                # запоминаем лучшую итерацию по первой метрике валидации, чтобы при остановке
+                # по времени вернуть её, а не последнюю
+                results = env.evaluation_result_list or []
+                if results:
+                    _, _, score, higher_is_better = results[0][:4]
+                    better = best["score"] is None or (score > best["score"] if higher_is_better else score < best["score"])
+                    if better:
+                        best.update(iteration=env.iteration, score=score, results=list(results))
                 if time.time() >= deadline:
-                    raise lgb.callback.EarlyStopException(env.iteration, env.evaluation_result_list)
+                    self._time_stopped = True
+                    stop_at = env.iteration if best["iteration"] is None else best["iteration"]
+                    raise lgb.callback.EarlyStopException(stop_at, best["results"] or results)
             stop_on_time.order = 30
             callbacks.append(stop_on_time)
         cls = lgb.LGBMRegressor if self.task == "regression" else lgb.LGBMClassifier
@@ -130,11 +143,14 @@ class BoostingModel:
     def _fit_xgboost(self, X, y, Xv, yv, rounds, deadline):
         import xgboost as xgb
 
-        callbacks = []
+        callbacks, owner = [], self
         if deadline is not None:
             class StopOnTime(xgb.callback.TrainingCallback):
                 def after_iteration(self, model, epoch, evals_log):
-                    return time.time() >= deadline
+                    if time.time() >= deadline:
+                        owner._time_stopped = True
+                        return True
+                    return False
             callbacks.append(StopOnTime())
         params = dict(
             n_estimators=rounds, learning_rate=self.learning_rate, max_depth=7, subsample=0.8,
@@ -155,7 +171,6 @@ class BoostingModel:
     def _fit_catboost(self, X, y, Xv, yv, rounds, deadline):
         from catboost import CatBoostClassifier, CatBoostRegressor
 
-        # у CatBoost нет ограничения по времени: рассчитываем на max_rounds и раннюю остановку
         self._cat_cols = [c for c in X.columns if isinstance(X[c].dtype, pd.CategoricalDtype)]
         params = dict(
             iterations=rounds, learning_rate=self.learning_rate, depth=6, thread_count=self.n_jobs,
@@ -168,7 +183,17 @@ class BoostingModel:
         self.model_ = cls(**params)
         fit_args = {"cat_features": self._cat_cols}
         if Xv is not None:
-            fit_args["eval_set"] = (self._prepare(Xv), yv)
+            fit_args["eval_set"] = (self._prepare(Xv), yv)  # с eval_set CatBoost оставляет лучшую итерацию
+        if deadline is not None:
+            owner = self
+
+            class StopOnTime:
+                def after_iteration(self, info):
+                    if time.time() >= deadline:
+                        owner._time_stopped = True
+                        return False  # False — остановить обучение
+                    return True
+            fit_args["callbacks"] = [StopOnTime()]
         self.model_.fit(self._prepare(X), y, **fit_args)
         best = self.model_.get_best_iteration()
         self.best_iteration_ = int(best + 1) if best is not None else int(self.model_.tree_count_)

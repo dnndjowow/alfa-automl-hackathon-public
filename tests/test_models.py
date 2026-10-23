@@ -103,7 +103,7 @@ class BehaviourTest(unittest.TestCase):
 
     def test_time_budget_stops_boosting_early(self):
         X, y = make_data("regression", n=3000)
-        for name in ("lightgbm", "xgboost"):
+        for name in ("lightgbm", "xgboost", "catboost"):
             with self.subTest(name):
                 m = model(name, "regression", max_rounds=100000, time_budget=0.5, learning_rate=0.05)
                 started = time.time()
@@ -112,6 +112,30 @@ class BehaviourTest(unittest.TestCase):
                 self.assertTrue(m.stopped_by_time_)
                 self.assertTrue(0 < m.best_iteration_ < 100000)
                 self.assertTrue(np.isfinite(m.predict(X)).all())
+
+    def test_no_stop_flag_when_training_finished_on_its_own(self):
+        # ревью: флаг ставился по часам даже без прерывания
+        X, y = make_data("regression")
+        for name in ("lightgbm", "xgboost", "catboost"):
+            with self.subTest(name):
+                m = model(name, "regression", max_rounds=20, time_budget=60).fit(X, y)
+                self.assertFalse(m.stopped_by_time_)
+                self.assertEqual(m.best_iteration_, 20)
+
+    def test_time_stop_keeps_best_validation_iteration(self):
+        # ревью: остановка LightGBM по времени возвращала последнюю итерацию вместо лучшей
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.normal(size=(4000, 8)), columns=[f"f{i}" for i in range(8)])
+        y = 3 * X["f0"] + rng.normal(scale=0.1, size=4000)
+        Xv = pd.DataFrame(rng.normal(size=(1000, 8)), columns=X.columns)
+        yv = -3 * Xv["f0"]  # валидация противоположна train: лучшая итерация — самая первая
+        for name in ("lightgbm", "xgboost", "catboost"):
+            with self.subTest(name):
+                m = BoostingModel(name, "regression", n_jobs=2, max_rounds=100000, learning_rate=0.1,
+                                  early_stopping_rounds=100000, time_budget=0.3)
+                m.fit(X, y, Xv, yv)
+                self.assertTrue(m.stopped_by_time_)
+                self.assertLessEqual(m.best_iteration_, 2)
 
     def test_same_seed_same_prediction(self):
         X, y = make_data("regression")
