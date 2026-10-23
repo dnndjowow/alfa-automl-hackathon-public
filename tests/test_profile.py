@@ -116,7 +116,7 @@ class PublicProfileTest(unittest.TestCase):
         self.assertEqual(target["classes"]["Worms"]["count"], 65)
         self.assertIn("Worms", target["rare_classes"])
         self.assertEqual(profile["features"]["n_features"], 42)
-        print("\nдлина текста паспорта (multiclass):", len(mp.format_profile(profile)))
+        self.assertLess(len(mp.format_profile(profile)), 6000)
 
 
 if __name__ == "__main__":

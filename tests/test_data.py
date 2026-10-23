@@ -1,9 +1,17 @@
+import tempfile
+import time
 import unittest
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
 
-from ml_data import DataError, TabularPreprocessor
+import ml_io
+import ml_schema
+from ml_data import DataError, LabelCodec, TabularPreprocessor, split_task
+from tests.synth import make_task
+
+DATA = Path(__file__).resolve().parent.parent / "data" / "public"
 
 
 def frame():
@@ -94,6 +102,129 @@ class PreprocessorTransformTest(unittest.TestCase):
         pre = TabularPreprocessor().fit(df)
         self.assertEqual(pre.categorical_cols_, ["m"])
         self.assertEqual(set(pre.categories_["m"]), {"1", "a", "2.5"})
+
+
+class LabelCodecTest(unittest.TestCase):
+    def test_round_trip_with_strings(self):
+        codec = LabelCodec().fit(["b", "a", "c", "a"])
+        self.assertEqual(list(codec.classes_), ["a", "b", "c"])
+        codes = codec.encode(["c", "a", "b"])
+        self.assertEqual(codes.tolist(), [2, 0, 1])
+        self.assertEqual(codec.decode(codes).tolist(), ["c", "a", "b"])
+
+    def test_integer_labels_keep_their_values(self):
+        codec = LabelCodec().fit([10, 3, 7])
+        self.assertEqual(codec.decode([0, 2]).tolist(), [3, 10])
+
+    def test_unknown_and_missing_labels_are_errors(self):
+        codec = LabelCodec().fit(["a", "b"])
+        with self.assertRaises(DataError):
+            codec.encode(["a", "zzz"])
+        with self.assertRaises(DataError):
+            codec.decode([5])
+        with self.assertRaises(DataError):
+            LabelCodec().fit(["a", None])
+
+    def test_decode_proba_columns_follow_class_order(self):
+        codec = LabelCodec().fit(["x", "y", "z"])
+        out = codec.decode_proba(np.full((2, 3), 1 / 3), index=[5, 6])
+        self.assertEqual(list(out.columns), ["x", "y", "z"])
+        self.assertEqual(list(out.index), [5, 6])
+        with self.assertRaises(DataError):
+            codec.decode_proba(np.zeros((2, 2)))
+
+
+class SplitTaskTest(unittest.TestCase):
+    def load(self, **kwargs):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        return ml_io.load_task(make_task(tmp.name, **kwargs).task_md)
+
+    def schema(self, data):
+        suggestion = ml_schema.infer_schema(
+            data.train, data.test, data.sample_submission, data.data_dictionary
+        )
+        return ml_schema.resolve_schema(suggestion)
+
+    def test_split_shapes_and_roles(self):
+        data = self.load(kind="regression", target="price", id_col="row")
+        split = split_task(data, self.schema(data))
+        self.assertEqual(split.X_train.shape, (300, 6))
+        self.assertNotIn("price", split.X_train.columns)
+        self.assertEqual(list(split.X_test.columns), list(split.X_train.columns))
+        self.assertEqual(list(split.test_ids.columns), ["row"])
+        self.assertEqual(split.test_ids["row"].tolist(), data.test["row"].tolist())
+        self.assertEqual(split.warnings, [])
+
+    def test_rows_without_target_are_dropped_with_warning(self):
+        data = self.load(kind="regression")
+        data.train.loc[:4, "y"] = np.nan
+        split = split_task(data, self.schema(data))
+        self.assertEqual(len(split.X_train), 295)
+        self.assertEqual(len(split.y_train), 295)
+        self.assertTrue(any("без таргета" in w for w in split.warnings))
+
+    def test_misaligned_sample_submission_is_reported(self):
+        data = self.load(kind="regression")
+        data.sample_submission = data.sample_submission.iloc[::-1].reset_index(drop=True)
+        split = split_task(data, self.schema(data))
+        self.assertTrue(any("sample_submission" in w for w in split.warnings))
+
+    def test_missing_pieces_raise(self):
+        data = self.load(kind="regression")
+        schema = self.schema(data)
+        data.test = None
+        with self.assertRaises(DataError):
+            split_task(data, schema)
+
+    def test_test_without_a_feature_warns_and_preprocessor_fills(self):
+        data = self.load(kind="regression")
+        schema = self.schema(data)
+        data.test = data.test.drop(columns=["b"])
+        split = split_task(data, schema)
+        self.assertTrue(any("'b'" in w for w in split.warnings))
+        out = TabularPreprocessor().fit(split.X_train).transform(split.X_test)
+        self.assertTrue(out["b"].isna().all())
+
+
+@unittest.skipUnless(DATA.exists(), "публичные данные не скачаны в data/public")
+class PublicDataPipelineTest(unittest.TestCase):
+    def run_case(self, case, rows, cols_after):
+        data = ml_io.load_task(DATA / case / "task.md")
+        schema = self.schema_for(data)
+        split = split_task(data, schema)
+        started = time.time()
+        pre = TabularPreprocessor()
+        train = pre.fit_transform(split.X_train)
+        test = pre.transform(split.X_test)
+        self.assertLess(time.time() - started, 30)
+        self.assertEqual(train.shape, (rows, cols_after))
+        self.assertEqual(list(train.columns), list(test.columns))
+        self.assertEqual(split.warnings, [])
+        return data, split, pre, train, test
+
+    def schema_for(self, data):
+        return ml_schema.resolve_schema(
+            ml_schema.infer_schema(data.train, data.test, data.sample_submission, data.data_dictionary)
+        )
+
+    def test_regression(self):
+        data, split, pre, train, test = self.run_case("regression_case", 53308, 62)
+        self.assertEqual(sorted(pre.categorical_cols_), ["State_Factor", "building_class", "facility_type"])
+        self.assertEqual(pre.dropped_, {})
+        self.assertEqual(len(test), 22449)
+
+    def test_multiclass(self):
+        data, split, pre, train, test = self.run_case("multiclass_case", 87670, 42)
+        self.assertEqual(sorted(pre.categorical_cols_), ["proto", "service", "state"])
+        codec = LabelCodec().fit(split.y_train)
+        self.assertEqual(len(codec.classes_), 10)
+        self.assertEqual(codec.decode(codec.encode(split.y_train)).tolist(), split.y_train.tolist())
+        self.assertIn("-", pre.categories_["service"])
+        known = set(data.train["state"].dropna().astype(str))
+        expected = (~data.test["state"].dropna().astype(str).isin(known)).sum() / len(data.test)
+        self.assertGreater(expected, 0)
+        self.assertAlmostEqual(pre.unseen_share_["state"], expected)
 
 
 if __name__ == "__main__":

@@ -2,12 +2,105 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass, field
+from typing import Optional, Union
+
 import numpy as np
 import pandas as pd
+
+import ml_io
+import ml_schema
 
 
 class DataError(ValueError):
     """Данные нельзя подготовить: нет нужных столбцов, неизвестные метки и т. п."""
+
+
+@dataclass
+class SplitData:
+    """Задача, разрезанная по схеме: признаки и таргет train, признаки test и его id."""
+
+    X_train: pd.DataFrame
+    y_train: Union[pd.Series, pd.DataFrame]
+    X_test: pd.DataFrame
+    test_ids: pd.DataFrame  # id-столбцы test в исходном порядке (может не иметь столбцов)
+    schema: ml_schema.Schema
+    warnings: list = field(default_factory=list)
+
+
+def split_task(data: ml_io.TaskData, schema: ml_schema.Schema) -> SplitData:
+    if data.train is None or data.test is None:
+        raise DataError("для обучения нужны и train, и test")
+    train, test, warnings = data.train, data.test, []
+    for col in schema.target_cols:
+        if col not in train.columns:
+            raise DataError(f"таргета {col!r} нет в train")
+    absent_train = [c for c in schema.feature_cols if c not in train.columns]
+    if absent_train:
+        raise DataError(f"признаков {absent_train} нет в train")
+    absent_test = [c for c in schema.feature_cols if c not in test.columns]
+    if absent_test:
+        warnings.append(f"в test нет признаков {absent_test}: они будут заполнены пропусками")
+    absent_ids = [c for c in schema.id_cols if c not in test.columns]
+    if absent_ids:
+        raise DataError(f"id-столбцов {absent_ids} нет в test")
+
+    targets = list(schema.target_cols)
+    has_target = train[targets].notna().all(axis=1)
+    if not has_target.all():
+        warnings.append(f"{int((~has_target).sum())} строк train без таргета исключены")
+        train = train.loc[has_target]
+    y = train[targets[0]] if len(targets) == 1 else train[targets]
+
+    sample = data.sample_submission
+    if sample is not None and schema.id_cols and all(c in sample.columns for c in schema.id_cols):
+        same = len(sample) == len(test) and all(
+            np.array_equal(sample[c].to_numpy(), test[c].to_numpy()) for c in schema.id_cols
+        )
+        if not same:
+            warnings.append("id в sample_submission не совпадают с test по порядку или числу строк")
+
+    return SplitData(
+        X_train=train[list(schema.feature_cols)],
+        y_train=y,
+        X_test=test[[c for c in schema.feature_cols if c in test.columns]],
+        test_ids=test[list(schema.id_cols)].copy(),
+        schema=schema,
+        warnings=warnings,
+    )
+
+
+class LabelCodec:
+    """Метки классов <-> целые коды 0..K-1; порядок классов фиксируется в fit()."""
+
+    def fit(self, y) -> "LabelCodec":
+        y = pd.Series(np.asarray(y))
+        if y.isna().any():
+            raise DataError("в метках классов есть пропуски")
+        try:
+            self.classes_ = np.array(sorted(y.unique()))
+        except TypeError:
+            self.classes_ = np.array(sorted(y.unique(), key=str), dtype=object)
+        return self
+
+    def encode(self, y) -> np.ndarray:
+        codes = pd.Index(self.classes_).get_indexer(pd.Series(np.asarray(y)))
+        if (codes < 0).any():
+            unknown = sorted({str(v) for v, c in zip(np.asarray(y), codes) if c < 0})[:5]
+            raise DataError(f"метки {unknown} не встречались при fit()")
+        return codes.astype("int64")
+
+    def decode(self, codes) -> np.ndarray:
+        codes = np.asarray(codes, dtype="int64")
+        if codes.size and (codes.min() < 0 or codes.max() >= len(self.classes_)):
+            raise DataError("код класса вне диапазона")
+        return self.classes_[codes]
+
+    def decode_proba(self, proba, index=None) -> pd.DataFrame:
+        proba = np.asarray(proba)
+        if proba.ndim != 2 or proba.shape[1] != len(self.classes_):
+            raise DataError(f"ожидается матрица (n, {len(self.classes_)})")
+        return pd.DataFrame(proba, columns=[str(c) for c in self.classes_], index=index)
 
 
 class TabularPreprocessor:
