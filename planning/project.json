@@ -1,0 +1,48 @@
+{
+  "title": "Альфа Хакатон — ML-агент",
+  "owner": "selecteg12",
+  "visibility": "PRIVATE",
+  "repository": "selecteg12/alfa-automl-hackathon",
+  "layout": "BOARD_LAYOUT",
+  "status": [
+    "К выполнению",
+    "В работе",
+    "На проверке",
+    "Готово"
+  ],
+  "fields": [
+    {
+      "name": "Ответственный",
+      "type": "TEXT"
+    },
+    {
+      "name": "Приоритет",
+      "type": "SINGLE_SELECT",
+      "options": [
+        "P0",
+        "P1"
+      ]
+    },
+    {
+      "name": "Контрольная точка",
+      "type": "TEXT"
+    }
+  ],
+  "views": [
+    {
+      "name": "Все задачи",
+      "layout": "BOARD_LAYOUT"
+    },
+    {
+      "name": "Иван",
+      "layout": "BOARD_LAYOUT",
+      "filter": "label:\"owner:ivan\""
+    },
+    {
+      "name": "Юра",
+      "layout": "BOARD_LAYOUT",
+      "filter": "label:\"owner:yura\""
+    }
+  ],
+  "invite_collaborators": false
+}

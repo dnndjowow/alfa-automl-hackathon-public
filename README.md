@@ -16,6 +16,7 @@
 ## Быстрые ссылки
 
 - [Все задачи](https://github.com/selecteg12/alfa-automl-hackathon/issues)
+- [Индекс 12 подготовленных карточек](docs/TASKS.md)
 - [Задачи Ивана](https://github.com/selecteg12/alfa-automl-hackathon/issues?q=is%3Aissue+is%3Aopen+label%3Aowner%3Aivan)
 - [Задачи Юры](https://github.com/selecteg12/alfa-automl-hackathon/issues?q=is%3Aissue+is%3Aopen+label%3Aowner%3Ayura)
 - [Правила работы](docs/WORKFLOW.md)
@@ -28,6 +29,10 @@
 Материалы, исходный baseline и актуальный список зависимостей находятся в reference/. Рабочий агент ещё не реализован. reference/baseline.py — исходник организаторов для изучения интерфейса, без изменений.
 
 Данные скачиваются из общей папки; модели, API-ключи и результаты локальных запусков в Git не добавляются.
+
+Для старта: Иван берёт #1 и готовит #4, Юра начинает #2 и #3, PM снимает блокеры в #7. Вспомогательные задачи Артёма и Максима — #11 и #12. GitHub-логины остальных участников можно привязать после приглашения.
+
+Доска Projects описана в planning/project.json; её создание требует дополнительного разрешения project у GitHub CLI. Приглашения участникам сейчас не отправляются.
 
 ## Перед первой сдачей
 
