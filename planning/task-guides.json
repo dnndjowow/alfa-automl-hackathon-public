@@ -1,75 +1,394 @@
 {
-  "10": {
-    "path": "docs/tasks/10-release.md",
-    "steps": 8,
-    "issue_number": 10,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/10"
-  },
-  "11": {
-    "path": "docs/tasks/11-data-report.md",
-    "steps": 8,
-    "issue_number": 11,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/11"
-  },
-  "12": {
-    "path": "docs/tasks/12-test-report.md",
-    "steps": 8,
-    "issue_number": 12,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/12"
-  },
   "01": {
     "path": "docs/tasks/01-interfaces.md",
-    "steps": 7,
+    "steps": 4,
     "issue_number": 1,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/1"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/1",
+    "kind": "stage"
   },
   "02": {
     "path": "docs/tasks/02-data-pipeline.md",
-    "steps": 8,
+    "steps": 4,
     "issue_number": 2,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/2"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/2",
+    "kind": "stage"
   },
   "03": {
     "path": "docs/tasks/03-ml-tools.md",
-    "steps": 8,
+    "steps": 4,
     "issue_number": 3,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/3"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/3",
+    "kind": "stage"
   },
   "04": {
     "path": "docs/tasks/04-llm-agent.md",
-    "steps": 8,
+    "steps": 4,
     "issue_number": 4,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/4"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/4",
+    "kind": "stage"
   },
   "05": {
     "path": "docs/tasks/05-autoresearch.md",
-    "steps": 8,
+    "steps": 4,
     "issue_number": 5,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/5"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/5",
+    "kind": "stage"
   },
   "06": {
     "path": "docs/tasks/06-submission.md",
-    "steps": 8,
+    "steps": 4,
     "issue_number": 6,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/6"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/6",
+    "kind": "stage"
   },
   "07": {
     "path": "docs/tasks/07-environment.md",
-    "steps": 8,
+    "steps": 4,
     "issue_number": 7,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/7"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/7",
+    "kind": "stage"
   },
   "08": {
     "path": "docs/tasks/08-universality.md",
-    "steps": 7,
+    "steps": 4,
     "issue_number": 8,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/8"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/8",
+    "kind": "stage"
   },
   "09": {
     "path": "docs/tasks/09-quality.md",
-    "steps": 8,
+    "steps": 4,
     "issue_number": 9,
-    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/9"
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/9",
+    "kind": "stage"
+  },
+  "10": {
+    "path": "docs/tasks/10-release.md",
+    "steps": 4,
+    "issue_number": 10,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/10",
+    "kind": "stage"
+  },
+  "11": {
+    "path": "docs/tasks/11-data-report.md",
+    "steps": 4,
+    "issue_number": 11,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/11",
+    "kind": "stage"
+  },
+  "12": {
+    "path": "docs/tasks/12-test-report.md",
+    "steps": 4,
+    "issue_number": 12,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/issues/12",
+    "kind": "stage"
+  },
+  "S01": {
+    "path": "docs/tasks/steps/S01.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S01.md",
+    "kind": "task"
+  },
+  "S02": {
+    "path": "docs/tasks/steps/S02.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S02.md",
+    "kind": "task"
+  },
+  "S03": {
+    "path": "docs/tasks/steps/S03.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S03.md",
+    "kind": "task"
+  },
+  "S04": {
+    "path": "docs/tasks/steps/S04.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S04.md",
+    "kind": "task"
+  },
+  "S05": {
+    "path": "docs/tasks/steps/S05.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S05.md",
+    "kind": "task"
+  },
+  "S06": {
+    "path": "docs/tasks/steps/S06.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S06.md",
+    "kind": "task"
+  },
+  "S07": {
+    "path": "docs/tasks/steps/S07.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S07.md",
+    "kind": "task"
+  },
+  "S08": {
+    "path": "docs/tasks/steps/S08.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S08.md",
+    "kind": "task"
+  },
+  "S09": {
+    "path": "docs/tasks/steps/S09.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S09.md",
+    "kind": "task"
+  },
+  "S10": {
+    "path": "docs/tasks/steps/S10.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S10.md",
+    "kind": "task"
+  },
+  "S11": {
+    "path": "docs/tasks/steps/S11.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S11.md",
+    "kind": "task"
+  },
+  "S12": {
+    "path": "docs/tasks/steps/S12.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S12.md",
+    "kind": "task"
+  },
+  "S13": {
+    "path": "docs/tasks/steps/S13.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S13.md",
+    "kind": "task"
+  },
+  "S14": {
+    "path": "docs/tasks/steps/S14.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S14.md",
+    "kind": "task"
+  },
+  "S15": {
+    "path": "docs/tasks/steps/S15.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S15.md",
+    "kind": "task"
+  },
+  "S16": {
+    "path": "docs/tasks/steps/S16.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S16.md",
+    "kind": "task"
+  },
+  "S17": {
+    "path": "docs/tasks/steps/S17.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S17.md",
+    "kind": "task"
+  },
+  "S18": {
+    "path": "docs/tasks/steps/S18.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S18.md",
+    "kind": "task"
+  },
+  "S19": {
+    "path": "docs/tasks/steps/S19.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S19.md",
+    "kind": "task"
+  },
+  "S20": {
+    "path": "docs/tasks/steps/S20.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S20.md",
+    "kind": "task"
+  },
+  "S21": {
+    "path": "docs/tasks/steps/S21.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S21.md",
+    "kind": "task"
+  },
+  "S22": {
+    "path": "docs/tasks/steps/S22.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S22.md",
+    "kind": "task"
+  },
+  "S23": {
+    "path": "docs/tasks/steps/S23.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S23.md",
+    "kind": "task"
+  },
+  "S24": {
+    "path": "docs/tasks/steps/S24.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S24.md",
+    "kind": "task"
+  },
+  "S25": {
+    "path": "docs/tasks/steps/S25.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S25.md",
+    "kind": "task"
+  },
+  "S26": {
+    "path": "docs/tasks/steps/S26.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S26.md",
+    "kind": "task"
+  },
+  "S27": {
+    "path": "docs/tasks/steps/S27.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S27.md",
+    "kind": "task"
+  },
+  "S28": {
+    "path": "docs/tasks/steps/S28.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S28.md",
+    "kind": "task"
+  },
+  "S29": {
+    "path": "docs/tasks/steps/S29.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S29.md",
+    "kind": "task"
+  },
+  "S30": {
+    "path": "docs/tasks/steps/S30.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S30.md",
+    "kind": "task"
+  },
+  "S31": {
+    "path": "docs/tasks/steps/S31.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S31.md",
+    "kind": "task"
+  },
+  "S32": {
+    "path": "docs/tasks/steps/S32.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S32.md",
+    "kind": "task"
+  },
+  "S33": {
+    "path": "docs/tasks/steps/S33.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S33.md",
+    "kind": "task"
+  },
+  "S34": {
+    "path": "docs/tasks/steps/S34.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S34.md",
+    "kind": "task"
+  },
+  "S35": {
+    "path": "docs/tasks/steps/S35.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S35.md",
+    "kind": "task"
+  },
+  "S36": {
+    "path": "docs/tasks/steps/S36.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S36.md",
+    "kind": "task"
+  },
+  "S37": {
+    "path": "docs/tasks/steps/S37.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S37.md",
+    "kind": "task"
+  },
+  "S38": {
+    "path": "docs/tasks/steps/S38.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S38.md",
+    "kind": "task"
+  },
+  "S39": {
+    "path": "docs/tasks/steps/S39.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S39.md",
+    "kind": "task"
+  },
+  "S40": {
+    "path": "docs/tasks/steps/S40.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S40.md",
+    "kind": "task"
+  },
+  "S41": {
+    "path": "docs/tasks/steps/S41.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S41.md",
+    "kind": "task"
+  },
+  "S42": {
+    "path": "docs/tasks/steps/S42.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S42.md",
+    "kind": "task"
+  },
+  "S43": {
+    "path": "docs/tasks/steps/S43.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S43.md",
+    "kind": "task"
+  },
+  "S44": {
+    "path": "docs/tasks/steps/S44.md",
+    "steps": 4,
+    "issue_number": null,
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S44.md",
+    "kind": "task"
   }
 }
-
