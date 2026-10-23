@@ -54,12 +54,30 @@ def fit_class_weights(proba: np.ndarray, y_true: np.ndarray, rounds: int = 3, lo
     return {"weights": weights, "score_before": before, "score_after": best}
 
 
-def holdout_gain(proba: np.ndarray, y_true: np.ndarray, fit_fraction: float = 0.6, seed: int = 0, **kwargs) -> dict:
-    """Подобрать веса на одной части и измерить Macro F1 на другой: показывает, не переобучились ли веса."""
+def _holdout_split(n: int, fit_fraction: float, seed: int, groups=None):
+    """Разделить строки на подбор и проверку; при groups одинаковые группы не попадают в обе части."""
+    rng = np.random.default_rng(seed)
+    if groups is None:
+        order = rng.permutation(n)
+        cut = int(n * fit_fraction)
+        return order[:cut], order[cut:]
+    groups = np.asarray(groups)
+    if len(groups) != n:
+        raise ValueError("groups должен иметь по значению на каждую строку")
+    unique = rng.permutation(np.unique(groups))
+    fit_groups = unique[: int(len(unique) * fit_fraction)]
+    in_fit = np.isin(groups, fit_groups)
+    return np.flatnonzero(in_fit), np.flatnonzero(~in_fit)
+
+
+def holdout_gain(proba: np.ndarray, y_true: np.ndarray, fit_fraction: float = 0.6, seed: int = 0,
+                 groups=None, **kwargs) -> dict:
+    """Подобрать веса на одной части и измерить Macro F1 на другой: показывает, не переобучились ли веса.
+
+    groups — номера групп одинаковых строк (ml_validation.row_groups): без них копии строк попадают
+    в обе части, и прирост на проверке завышен."""
     proba, y_true = np.asarray(proba), np.asarray(y_true)
-    order = np.random.default_rng(seed).permutation(len(y_true))
-    cut = int(len(order) * fit_fraction)
-    fit_idx, test_idx = order[:cut], order[cut:]
+    fit_idx, test_idx = _holdout_split(len(y_true), fit_fraction, seed, groups)
     fitted = fit_class_weights(proba[fit_idx], y_true[fit_idx], **kwargs)
     n_classes = proba.shape[1]
     base = macro_f1_codes(y_true[test_idx], proba[test_idx].argmax(axis=1), n_classes)
@@ -68,12 +86,14 @@ def holdout_gain(proba: np.ndarray, y_true: np.ndarray, fit_fraction: float = 0.
 
 
 def choose_class_weights(proba: np.ndarray, y_true: np.ndarray, min_holdout_gain: float = 0.002,
-                         repeats: int = 3, **kwargs) -> dict:
+                         repeats: int = 3, fit_fraction: float = 0.6, groups=None, **kwargs) -> dict:
     """Применять веса, только если средний прирост на отложенных частях не меньше порога.
 
-    Иначе возвращает единичные веса: подбор на шуме не должен портить результат."""
+    Иначе возвращает единичные веса: подбор на шуме не должен портить результат.
+    kwargs уходят в fit_class_weights (rounds, low, high, steps, min_gain)."""
     proba = np.asarray(proba)
-    gains = [holdout_gain(proba, y_true, seed=seed, **kwargs)["gain"] for seed in range(repeats)]
+    gains = [holdout_gain(proba, y_true, fit_fraction=fit_fraction, seed=seed, groups=groups, **kwargs)["gain"]
+             for seed in range(repeats)]
     mean_gain = float(np.mean(gains))
     if mean_gain < min_holdout_gain:
         return {"applied": False, "weights": np.ones(proba.shape[1]), "holdout_gain": mean_gain}

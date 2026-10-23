@@ -57,6 +57,31 @@ class ClassWeightsTest(unittest.TestCase):
         self.assertFalse(chosen["applied"])
         np.testing.assert_array_equal(chosen["weights"], np.ones(3))
 
+    def test_fit_fraction_is_accepted(self):
+        # ревью: fit_fraction уходил в fit_class_weights и вызывал TypeError
+        proba, y = biased_problem(n=3000, seed=3)
+        chosen = pp.choose_class_weights(proba, y, fit_fraction=0.7)
+        self.assertTrue(chosen["applied"])
+
+    def test_groups_keep_copies_on_one_side(self):
+        groups = np.repeat(np.arange(100), 3)
+        fit_idx, test_idx = pp._holdout_split(300, 0.6, 0, groups)
+        self.assertEqual(len(set(groups[fit_idx]) & set(groups[test_idx])), 0)
+        self.assertEqual(len(fit_idx) + len(test_idx), 300)
+        with self.assertRaises(ValueError):
+            pp._holdout_split(300, 0.6, 0, groups[:10])
+
+    def test_duplicates_inflate_random_holdout_but_not_grouped(self):
+        # ревью: при копиях строк случайный holdout завышал прирост от весов
+        rng = np.random.default_rng(5)
+        base_p, base_y = biased_problem(n=600, seed=5, shift=1.2)
+        copies = rng.integers(1, 12, size=600)  # строки повторяются по 1–11 раз, как дубликаты
+        proba, y = np.repeat(base_p, copies, axis=0), np.repeat(base_y, copies)
+        groups = np.repeat(np.arange(600), copies)
+        leaky = np.mean([pp.holdout_gain(proba, y, seed=s)["gain"] for s in range(5)])
+        honest = np.mean([pp.holdout_gain(proba, y, seed=s, groups=groups)["gain"] for s in range(5)])
+        self.assertGreater(leaky, honest)
+
     def test_weights_never_hurt_on_fit_data_and_stay_one_if_nothing_helps(self):
         y = np.repeat([0, 1, 2], 100)
         proba = np.eye(3)[y] * 0.9 + 0.05  # уже идеально
