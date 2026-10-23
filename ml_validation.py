@@ -17,6 +17,20 @@ class ValidationError(ValueError):
     """Схему валидации нельзя построить на этих данных."""
 
 
+class Splits(list):
+    """Список пар (train_idx, valid_idx) и схема, которая применилась на самом деле.
+
+    Она может отличаться от запрошенной: например, стратификация невозможна при классе
+    из одной строки, и тогда используется обычный KFold; note объясняет почему."""
+
+    def __init__(self, pairs, strategy, n_splits, note=None):
+        super().__init__(pairs)
+        self.strategy, self.n_splits, self.note = strategy, n_splits, note
+
+    def effective(self) -> dict:
+        return {"strategy": self.strategy, "n_splits": len(self), "note": self.note}
+
+
 def row_groups(X: pd.DataFrame) -> np.ndarray:
     """Одинаковые по признакам строки получают один и тот же номер группы."""
     return pd.util.hash_pandas_object(X, index=False).to_numpy()
@@ -27,19 +41,25 @@ def suggest_validation(profile: dict, X_train: pd.DataFrame = None, n_splits: in
     """Предложить схему: temporal, group, stratified или kfold, с причиной."""
     classification = profile["task"]["type"] in ("binary", "multiclass")
     columns = {c["name"]: c for c in profile.get("features", {}).get("columns", [])}
-    out_of_range = profile.get("train_test", {}).get("out_of_train_range_share", {})
+    train_test = profile.get("train_test", {})
+    out_of_range = train_test.get("out_of_train_range_share", {})
+    sides = train_test.get("out_of_train_range_side", {})
     for name, share in out_of_range.items():
         info = columns.get(name)
+        side = sides.get(name, "above")
         if (
-            share >= 0.9 and info is not None
+            share >= 0.9 and info is not None and side in ("above", "below")
             and info["dtype"].startswith(("int", "uint"))
             and 3 <= info["n_unique"] <= 50
         ):
+            direction = "forward" if side == "above" else "backward"
+            where = "более поздних" if direction == "forward" else "более ранних"
             return {
-                "strategy": "temporal", "column": name, "n_splits": min(3, info["n_unique"] - 1),
-                "classification": classification,
-                "reason": f"{share:.0%} строк test лежат за пределами train по целочисленному "
-                          f"признаку {name!r} ({info['n_unique']} значений): проверяем на более поздних значениях",
+                "strategy": "temporal", "column": name, "direction": direction,
+                "n_splits": min(3, info["n_unique"] - 1), "classification": classification,
+                "reason": f"{share:.0%} строк test лежат {'выше' if side == 'above' else 'ниже'} границ train "
+                          f"по целочисленному признаку {name!r} ({info['n_unique']} значений): "
+                          f"проверяем на {where} значениях",
             }
     if X_train is not None and len(X_train):
         shared = float(X_train.duplicated(keep=False).mean())
@@ -65,12 +85,14 @@ def _temporal(plan, X):
     k = min(int(plan.get("n_splits", 3)), len(uniq) - 1)
     if k < 1:
         raise ValidationError(f"в {column!r} меньше двух значений: временная схема невозможна")
+    backward = plan.get("direction", "forward") == "backward"
     splits = []
-    for v in uniq[-k:]:
-        train, valid = np.flatnonzero(values < v), np.flatnonzero(values == v)
+    for v in (uniq[:k][::-1] if backward else uniq[-k:]):
+        train = np.flatnonzero(values > v) if backward else np.flatnonzero(values < v)
+        valid = np.flatnonzero(values == v)
         if len(train) and len(valid):
             splits.append((train, valid))
-    return splits
+    return Splits(splits, "temporal", len(splits))
 
 
 def make_splits(plan: dict, X: pd.DataFrame, y=None, seed: int = 0) -> list:
@@ -92,15 +114,19 @@ def make_splits(plan: dict, X: pd.DataFrame, y=None, seed: int = 0) -> list:
             raise ValidationError("меньше двух групп: групповая схема невозможна")
         if y is not None and plan.get("classification"):
             folds = StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed).split(X, y, groups)
-        else:
-            folds = GroupKFold(n_splits).split(X, y, groups)
-        return [(a, b) for a, b in folds]
+            return Splits(folds, "group_stratified", n_splits)
+        return Splits(GroupKFold(n_splits).split(X, y, groups), "group", n_splits)
+    note = None
     if strategy == "stratified":
         if y is None:
             raise ValidationError("для стратификации нужен y")
         smallest = int(pd.Series(np.asarray(y)).value_counts().min())
         if smallest >= 2:
+            if smallest < n_splits:
+                note = f"частей {smallest} вместо {n_splits}: в самом редком классе {smallest} строк"
             n_splits = min(n_splits, smallest)
-            return [(a, b) for a, b in StratifiedKFold(n_splits, shuffle=True, random_state=seed).split(X, y)]
-    return [(a, b) for a, b in KFold(n_splits, shuffle=True, random_state=seed).split(X)]
+            folds = StratifiedKFold(n_splits, shuffle=True, random_state=seed).split(X, y)
+            return Splits(folds, "stratified", n_splits, note)
+        note = "стратификация невозможна: есть класс из одной строки; использован обычный KFold"
+    return Splits(KFold(n_splits, shuffle=True, random_state=seed).split(X), "kfold", n_splits, note)
 

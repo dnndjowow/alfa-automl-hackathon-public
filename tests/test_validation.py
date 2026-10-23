@@ -12,11 +12,11 @@ import ml_validation as mv
 DATA = Path(__file__).resolve().parent.parent / "data" / "public"
 
 
-def profile_with(task_type, out_of_range=None, columns=()):
+def profile_with(task_type, out_of_range=None, columns=(), sides=None):
     return {
         "task": {"type": task_type},
         "features": {"columns": list(columns)},
-        "train_test": {"out_of_train_range_share": out_of_range or {}},
+        "train_test": {"out_of_train_range_share": out_of_range or {}, "out_of_train_range_side": sides or {}},
     }
 
 
@@ -26,6 +26,22 @@ class SuggestTest(unittest.TestCase):
         plan = mv.suggest_validation(profile_with("regression", {"period": 1.0}, columns))
         self.assertEqual((plan["strategy"], plan["column"], plan["n_splits"]), ("temporal", "period", 3))
         self.assertIn("period", plan["reason"])
+
+    def test_test_before_train_validates_on_earliest_values(self):
+        # ревью: при test раньше train проверка шла на самых поздних значениях
+        columns = [{"name": "yr", "dtype": "int64", "n_unique": 5}]
+        plan = mv.suggest_validation(profile_with("regression", {"yr": 1.0}, columns, {"yr": "below"}))
+        self.assertEqual(plan["direction"], "backward")
+        X = pd.DataFrame({"yr": np.repeat([5, 6, 7, 8, 9], 10)})
+        splits = mv.make_splits(plan, X)
+        self.assertEqual([int(X.yr.iloc[v[0]]) for _, v in splits], [7, 6, 5])
+        for train, valid in splits:
+            self.assertGreater(X.yr.iloc[train].min(), X.yr.iloc[valid].max())
+
+    def test_drift_on_both_sides_is_not_temporal(self):
+        columns = [{"name": "yr", "dtype": "int64", "n_unique": 5}]
+        plan = mv.suggest_validation(profile_with("regression", {"yr": 1.0}, columns, {"yr": "both"}))
+        self.assertEqual(plan["strategy"], "kfold")
 
     def test_float_or_high_cardinality_columns_do_not_trigger_temporal(self):
         columns = [{"name": "t", "dtype": "float64", "n_unique": 5},
@@ -94,11 +110,16 @@ class SplitsTest(unittest.TestCase):
         y = pd.Series(["a"] * 95 + ["b"] * 3 + ["c"] * 2)
         splits = mv.make_splits({"strategy": "stratified", "n_splits": 5}, pd.DataFrame({"x": range(100)}), y)
         self.assertEqual(len(splits), 2)
+        self.assertEqual(splits.effective()["strategy"], "stratified")
+        self.assertIn("2", splits.effective()["note"])
 
-    def test_singleton_class_falls_back_to_plain_kfold(self):
+    def test_singleton_class_falls_back_to_plain_kfold_and_says_so(self):
+        # ревью: откат на KFold был скрытым, план продолжал говорить «stratified»
         y = pd.Series(["a"] * 99 + ["b"])
         splits = mv.make_splits({"strategy": "stratified", "n_splits": 5}, pd.DataFrame({"x": range(100)}), y)
         self.assertEqual(len(splits), 5)
+        self.assertEqual(splits.effective()["strategy"], "kfold")
+        self.assertIn("одной строки", splits.effective()["note"])
 
     def test_kfold_is_deterministic_for_a_seed(self):
         X = pd.DataFrame({"x": range(50)})
