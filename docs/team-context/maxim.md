@@ -12,8 +12,8 @@ GitHub: [osin1500maxim](https://github.com/osin1500maxim). Это контекс
 
 | Личный блок | Сдать до МСК |
 | --- | --- |
-| [A05](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A05.md) Независимо воспроизвести подготовку и два рабочих запуска | 24.10 17:00 |
-| [A14](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A14.md) Проверить финальный архив и результаты двух полных прогонов | 25.10 16:00 |
+| [A05 · #61](https://github.com/selecteg12/alfa-automl-hackathon/issues/61) Независимо воспроизвести подготовку и два рабочих запуска | 24.10 17:00 |
+| [A14 · #70](https://github.com/selecteg12/alfa-automl-hackathon/issues/70) Проверить финальный архив и результаты двух полных прогонов | 25.10 16:00 |
 
 ## Самостоятельность и взаимодействие
 

@@ -2,85 +2,85 @@
   "A01": {
     "path": "docs/tasks/current/A01.md",
     "steps": 5,
-    "issue_number": null,
+    "issue_number": 57,
     "kind": "active_block"
   },
   "A02": {
     "path": "docs/tasks/current/A02.md",
     "steps": 6,
-    "issue_number": null,
+    "issue_number": 58,
     "kind": "active_block"
   },
   "A03": {
     "path": "docs/tasks/current/A03.md",
     "steps": 4,
-    "issue_number": null,
+    "issue_number": 59,
     "kind": "active_block"
   },
   "A04": {
     "path": "docs/tasks/current/A04.md",
     "steps": 5,
-    "issue_number": null,
+    "issue_number": 60,
     "kind": "active_block"
   },
   "A05": {
     "path": "docs/tasks/current/A05.md",
     "steps": 4,
-    "issue_number": null,
+    "issue_number": 61,
     "kind": "active_block"
   },
   "A06": {
     "path": "docs/tasks/current/A06.md",
     "steps": 5,
-    "issue_number": null,
+    "issue_number": 62,
     "kind": "active_block"
   },
   "A07": {
     "path": "docs/tasks/current/A07.md",
     "steps": 5,
-    "issue_number": null,
+    "issue_number": 63,
     "kind": "active_block"
   },
   "A08": {
     "path": "docs/tasks/current/A08.md",
     "steps": 4,
-    "issue_number": null,
+    "issue_number": 64,
     "kind": "active_block"
   },
   "A09": {
     "path": "docs/tasks/current/A09.md",
     "steps": 4,
-    "issue_number": null,
+    "issue_number": 65,
     "kind": "active_block"
   },
   "A10": {
     "path": "docs/tasks/current/A10.md",
     "steps": 5,
-    "issue_number": null,
+    "issue_number": 66,
     "kind": "active_block"
   },
   "A11": {
     "path": "docs/tasks/current/A11.md",
     "steps": 4,
-    "issue_number": null,
+    "issue_number": 67,
     "kind": "active_block"
   },
   "A12": {
     "path": "docs/tasks/current/A12.md",
     "steps": 5,
-    "issue_number": null,
+    "issue_number": 68,
     "kind": "active_block"
   },
   "A13": {
     "path": "docs/tasks/current/A13.md",
     "steps": 5,
-    "issue_number": null,
+    "issue_number": 69,
     "kind": "active_block"
   },
   "A14": {
     "path": "docs/tasks/current/A14.md",
     "steps": 4,
-    "issue_number": null,
+    "issue_number": 70,
     "kind": "active_block"
   }
 }

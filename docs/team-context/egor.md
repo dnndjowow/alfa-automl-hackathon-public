@@ -12,9 +12,9 @@ GitHub: [selecteg12](https://github.com/selecteg12). Это контекст, з
 
 | Личный блок | Сдать до МСК |
 | --- | --- |
-| [A03](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A03.md) Обеспечить доступы, рабочее окружение и способ упаковки | 23.10 23:00 |
-| [A08](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A08.md) Отправить первый допустимый сабмит и проверить результат платформы | 24.10 16:00 |
-| [A13](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A13.md) Проверить чистый архив, отправить финал и зафиксировать сдачу | 25.10 19:30 |
+| [A03 · #59](https://github.com/selecteg12/alfa-automl-hackathon/issues/59) Обеспечить доступы, рабочее окружение и способ упаковки | 23.10 23:00 |
+| [A08 · #64](https://github.com/selecteg12/alfa-automl-hackathon/issues/64) Отправить первый допустимый сабмит и проверить результат платформы | 24.10 16:00 |
+| [A13 · #69](https://github.com/selecteg12/alfa-automl-hackathon/issues/69) Проверить чистый архив, отправить финал и зафиксировать сдачу | 25.10 19:30 |
 
 ## Самостоятельность и взаимодействие
 

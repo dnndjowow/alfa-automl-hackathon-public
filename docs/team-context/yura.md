@@ -12,9 +12,9 @@ GitHub: [dnndjowow](https://github.com/dnndjowow). Это контекст, за
 
 | Личный блок | Сдать до МСК |
 | --- | --- |
-| [A02](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md) Сделать полный ML-проход: данные, обучение, метрики и файл ответа | 24.10 14:00 |
-| [A07](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A07.md) Обеспечить устойчивость ML-инструментов и соблюдение ресурсов | 24.10 21:00 |
-| [A11](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A11.md) Закрыть блокирующие ошибки и передать финальный pipeline | 25.10 10:00 |
+| [A02 · #58](https://github.com/selecteg12/alfa-automl-hackathon/issues/58) Сделать полный ML-проход: данные, обучение, метрики и файл ответа | 24.10 14:00 |
+| [A07 · #63](https://github.com/selecteg12/alfa-automl-hackathon/issues/63) Обеспечить устойчивость ML-инструментов и соблюдение ресурсов | 24.10 21:00 |
+| [A11 · #67](https://github.com/selecteg12/alfa-automl-hackathon/issues/67) Закрыть блокирующие ошибки и передать финальный pipeline | 25.10 10:00 |
 
 ## Самостоятельность и взаимодействие
 

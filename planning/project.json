@@ -49,43 +49,43 @@
       "name": "Все задачи",
       "number": 1,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"type:task\""
+      "filter": "label:\"plan:current\""
     },
     {
       "name": "Иван",
       "number": 2,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"type:task\" label:\"owner:ivan\""
+      "filter": "label:\"plan:current\" label:\"owner:ivan\""
     },
     {
       "name": "Юра",
       "number": 3,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"type:task\" label:\"owner:yura\""
+      "filter": "label:\"plan:current\" label:\"owner:yura\""
     },
     {
       "name": "Артём",
       "number": 4,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"type:task\" label:\"owner:artem\""
+      "filter": "label:\"plan:current\" label:\"owner:artem\""
     },
     {
       "name": "Максим",
       "number": 5,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"type:task\" label:\"owner:maxim\""
+      "filter": "label:\"plan:current\" label:\"owner:maxim\""
     },
     {
       "name": "Егор / PM",
       "number": 6,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"type:task\" label:\"owner:pm\""
+      "filter": "label:\"plan:current\" label:\"owner:pm\""
     },
     {
       "name": "Порядок выполнения",
       "number": 7,
       "layout": "TABLE_LAYOUT",
-      "filter": "label:\"type:task\""
+      "filter": "label:\"plan:current\""
     }
   ],
   "invite_collaborators": true,
@@ -110,5 +110,8 @@
       "github": "seelffff",
       "role": "WRITER"
     }
-  ]
+  ],
+  "active_blocks": 14,
+  "filter": "label:\"plan:current\"",
+  "legacy_issues": 56
 }

@@ -12,8 +12,8 @@ GitHub: [Shyrup4ik](https://github.com/Shyrup4ik). Это контекст, за
 
 | Личный блок | Сдать до МСК |
 | --- | --- |
-| [A04](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A04.md) Передать разработчикам проверенные особенности двух датасетов | 24.10 10:00 |
-| [A09](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A09.md) Подготовить и проверить небольшие варианты новых входов | 24.10 18:00 |
+| [A04 · #60](https://github.com/selecteg12/alfa-automl-hackathon/issues/60) Передать разработчикам проверенные особенности двух датасетов | 24.10 10:00 |
+| [A09 · #65](https://github.com/selecteg12/alfa-automl-hackathon/issues/65) Подготовить и проверить небольшие варианты новых входов | 24.10 18:00 |
 
 ## Самостоятельность и взаимодействие
 

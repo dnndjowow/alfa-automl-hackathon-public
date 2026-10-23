@@ -12,10 +12,10 @@ LLM-контроллер, понимание задачи, AutoResearch, уни�
 
 | Личный блок | Сдать до МСК |
 | --- | --- |
-| [A01](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md) Собрать работающего LLM-агента и подключить ML-код Юры | 24.10 14:00 |
-| [A06](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A06.md) Довести самостоятельное исследование и безопасное завершение | 24.10 18:00 |
-| [A10](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A10.md) Проверить перенос на незнакомые постановки и убрать жёсткие привязки | 24.10 22:00 |
-| [A12](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A12.md) Выбрать переносимую конфигурацию и подтвердить готовность финала | 25.10 17:00 |
+| [A01 · #57](https://github.com/selecteg12/alfa-automl-hackathon/issues/57) Собрать работающего LLM-агента и подключить ML-код Юры | 24.10 14:00 |
+| [A06 · #62](https://github.com/selecteg12/alfa-automl-hackathon/issues/62) Довести самостоятельное исследование и безопасное завершение | 24.10 18:00 |
+| [A10 · #66](https://github.com/selecteg12/alfa-automl-hackathon/issues/66) Проверить перенос на незнакомые постановки и убрать жёсткие привязки | 24.10 22:00 |
+| [A12 · #68](https://github.com/selecteg12/alfa-automl-hackathon/issues/68) Выбрать переносимую конфигурацию и подтвердить готовность финала | 25.10 17:00 |
 
 ## Самостоятельность и взаимодействие
 
