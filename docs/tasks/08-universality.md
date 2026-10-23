@@ -10,9 +10,9 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S30](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S30.md) Проверить новые схемы входа и ответа | Иван | 24.10 17:30 | 24.10 19:00 |
-| [S32](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S32.md) Проверить метрики, редкие случаи и границы поддержки | Иван | 24.10 19:00 | 24.10 20:00 |
-| [S38](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S38.md) Исправить критические баги и проверить финальный pipeline | Юра | 25.10 08:00 | 25.10 10:00 |
+| [S30 · #42](https://github.com/selecteg12/alfa-automl-hackathon/issues/42) Проверить новые схемы входа и ответа | Иван | 24.10 17:30 | 24.10 19:00 |
+| [S32 · #44](https://github.com/selecteg12/alfa-automl-hackathon/issues/44) Проверить метрики, редкие случаи и границы поддержки | Иван | 24.10 19:00 | 24.10 20:00 |
+| [S38 · #50](https://github.com/selecteg12/alfa-automl-hackathon/issues/50) Исправить критические баги и проверить финальный pipeline | Юра | 25.10 08:00 | 25.10 10:00 |
 
 ## Как выполнить
 

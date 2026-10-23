@@ -10,9 +10,9 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S18](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S18.md) Реализовать разбиение данных и вычисление метрик | Юра | 24.10 09:00 | 24.10 10:00 |
-| [S20](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S20.md) Обучить первую регрессионную модель | Юра | 24.10 10:00 | 24.10 11:00 |
-| [S21](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S21.md) Обучить первую модель классификации | Юра | 24.10 11:00 | 24.10 12:00 |
+| [S18 · #30](https://github.com/selecteg12/alfa-automl-hackathon/issues/30) Реализовать разбиение данных и вычисление метрик | Юра | 24.10 09:00 | 24.10 10:00 |
+| [S20 · #32](https://github.com/selecteg12/alfa-automl-hackathon/issues/32) Обучить первую регрессионную модель | Юра | 24.10 10:00 | 24.10 11:00 |
+| [S21 · #33](https://github.com/selecteg12/alfa-automl-hackathon/issues/33) Обучить первую модель классификации | Юра | 24.10 11:00 | 24.10 12:00 |
 
 ## Как выполнить
 

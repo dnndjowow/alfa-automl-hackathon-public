@@ -10,10 +10,10 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S33](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S33.md) Ограничить ресурсы и убрать лишние расходы pipeline | Юра | 24.10 19:00 | 24.10 21:00 |
-| [S35](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S35.md) Сравнить варианты регрессии на одной валидации | Иван | 24.10 20:00 | 24.10 21:30 |
-| [S36](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S36.md) Сравнить варианты классификации с учётом редких классов | Иван | 24.10 21:30 | 24.10 23:00 |
-| [S37](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S37.md) Выбрать финальную конфигурацию и заморозить функции | Иван | 25.10 08:00 | 25.10 10:00 |
+| [S33 · #45](https://github.com/selecteg12/alfa-automl-hackathon/issues/45) Ограничить ресурсы и убрать лишние расходы pipeline | Юра | 24.10 19:00 | 24.10 21:00 |
+| [S35 · #47](https://github.com/selecteg12/alfa-automl-hackathon/issues/47) Сравнить варианты регрессии на одной валидации | Иван | 24.10 20:00 | 24.10 21:30 |
+| [S36 · #48](https://github.com/selecteg12/alfa-automl-hackathon/issues/48) Сравнить варианты классификации с учётом редких классов | Иван | 24.10 21:30 | 24.10 23:00 |
+| [S37 · #49](https://github.com/selecteg12/alfa-automl-hackathon/issues/49) Выбрать финальную конфигурацию и заморозить функции | Иван | 25.10 08:00 | 25.10 10:00 |
 
 ## Как выполнить
 

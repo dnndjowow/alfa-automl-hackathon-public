@@ -10,10 +10,10 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S03](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S03.md) Запустить работу команды и снять вопросы по доступам | Егор / PM | 23.10 20:00 | 23.10 21:00 |
-| [S07](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S07.md) Проверить Python, зависимости и доступ к API | Егор / PM | 23.10 21:00 | 23.10 23:00 |
-| [S12](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S12.md) Подготовить сборку и аудит ZIP решения | Егор / PM | 23.10 23:00 | 24.10 00:00 |
-| [S16](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S16.md) Провести первую интеграционную сверку | Егор / PM | 24.10 00:00 | 24.10 01:00 |
+| [S03 · #15](https://github.com/selecteg12/alfa-automl-hackathon/issues/15) Запустить работу команды и снять вопросы по доступам | Егор / PM | 23.10 20:00 | 23.10 21:00 |
+| [S07 · #19](https://github.com/selecteg12/alfa-automl-hackathon/issues/19) Проверить Python, зависимости и доступ к API | Егор / PM | 23.10 21:00 | 23.10 23:00 |
+| [S12 · #24](https://github.com/selecteg12/alfa-automl-hackathon/issues/24) Подготовить сборку и аудит ZIP решения | Егор / PM | 23.10 23:00 | 24.10 00:00 |
+| [S16 · #28](https://github.com/selecteg12/alfa-automl-hackathon/issues/28) Провести первую интеграционную сверку | Егор / PM | 24.10 00:00 | 24.10 01:00 |
 
 ## Как выполнить
 

@@ -1,0 +1,46 @@
+{
+  "repository": "selecteg12/alfa-automl-hackathon",
+  "project": "https://github.com/users/selecteg12/projects/2",
+  "owner": {
+    "name": "Егор",
+    "github": "selecteg12"
+  },
+  "members": [
+    {
+      "name": "Артём",
+      "github": "Shyrup4ik",
+      "node_id": "U_kgDODqJCrQ",
+      "owner_label": "owner:artem",
+      "invitation_id": 339332626,
+      "repository_status": "invitation_pending",
+      "project_role": "WRITER"
+    },
+    {
+      "name": "Максим",
+      "github": "osin1500maxim",
+      "node_id": "U_kgDODN_dJg",
+      "owner_label": "owner:maxim",
+      "invitation_id": 339332630,
+      "repository_status": "invitation_pending",
+      "project_role": "WRITER"
+    },
+    {
+      "name": "Юра",
+      "github": "dnndjowow",
+      "node_id": "U_kgDODXmJdw",
+      "owner_label": "owner:yura",
+      "invitation_id": 339332634,
+      "repository_status": "invitation_pending",
+      "project_role": "WRITER"
+    },
+    {
+      "name": "Иван",
+      "github": "seelffff",
+      "node_id": "U_kgDOCxrtGw",
+      "owner_label": "owner:ivan",
+      "invitation_id": 339332637,
+      "repository_status": "invitation_pending",
+      "project_role": "WRITER"
+    }
+  ]
+}

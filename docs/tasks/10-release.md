@@ -10,10 +10,10 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S26](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S26.md) Собрать и отправить первый рабочий сабмит | Егор / PM | 24.10 14:00 | 24.10 15:00 |
-| [S40](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S40.md) Провести полный прогон из чистого архива | Егор / PM | 25.10 10:00 | 25.10 16:00 |
-| [S43](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S43.md) Подтвердить техническую готовность финального архива | Иван | 25.10 16:00 | 25.10 17:00 |
-| [S44](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S44.md) Отправить финал и проверить, что сдача зафиксирована | Егор / PM | 25.10 17:00 | 25.10 19:30 |
+| [S26 · #38](https://github.com/selecteg12/alfa-automl-hackathon/issues/38) Собрать и отправить первый рабочий сабмит | Егор / PM | 24.10 14:00 | 24.10 15:00 |
+| [S40 · #52](https://github.com/selecteg12/alfa-automl-hackathon/issues/52) Провести полный прогон из чистого архива | Егор / PM | 25.10 10:00 | 25.10 16:00 |
+| [S43 · #55](https://github.com/selecteg12/alfa-automl-hackathon/issues/55) Подтвердить техническую готовность финального архива | Иван | 25.10 16:00 | 25.10 17:00 |
+| [S44 · #56](https://github.com/selecteg12/alfa-automl-hackathon/issues/56) Отправить финал и проверить, что сдача зафиксирована | Егор / PM | 25.10 17:00 | 25.10 19:30 |
 
 ## Как выполнить
 

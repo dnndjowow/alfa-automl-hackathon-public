@@ -10,9 +10,9 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S09](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S09.md) Подключить LLM и проверить структурированный ответ | Иван | 23.10 22:00 | 23.10 23:00 |
-| [S11](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S11.md) Собрать контроллер инструментов на заглушках | Иван | 23.10 23:00 | 24.10 00:00 |
-| [S22](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S22.md) Подключить реальные ML-инструменты к LLM-контроллеру | Иван | 24.10 12:00 | 24.10 14:00 |
+| [S09 · #21](https://github.com/selecteg12/alfa-automl-hackathon/issues/21) Подключить LLM и проверить структурированный ответ | Иван | 23.10 22:00 | 23.10 23:00 |
+| [S11 · #23](https://github.com/selecteg12/alfa-automl-hackathon/issues/23) Собрать контроллер инструментов на заглушках | Иван | 23.10 23:00 | 24.10 00:00 |
+| [S22 · #34](https://github.com/selecteg12/alfa-automl-hackathon/issues/34) Подключить реальные ML-инструменты к LLM-контроллеру | Иван | 24.10 12:00 | 24.10 14:00 |
 
 ## Как выполнить
 

@@ -10,9 +10,9 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S02](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S02.md) Реализовать загрузку файлов и сохранение порядка строк | Юра | 23.10 20:00 | 23.10 22:00 |
-| [S10](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S10.md) Сделать предобработку числовых и категориальных признаков | Юра | 23.10 22:00 | 24.10 00:00 |
-| [S15](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S15.md) Сформировать компактный автоматический профиль данных для LLM | Юра | 24.10 00:00 | 24.10 01:00 |
+| [S02 · #14](https://github.com/selecteg12/alfa-automl-hackathon/issues/14) Реализовать загрузку файлов и сохранение порядка строк | Юра | 23.10 20:00 | 23.10 22:00 |
+| [S10 · #22](https://github.com/selecteg12/alfa-automl-hackathon/issues/22) Сделать предобработку числовых и категориальных признаков | Юра | 23.10 22:00 | 24.10 00:00 |
+| [S15 · #27](https://github.com/selecteg12/alfa-automl-hackathon/issues/27) Сформировать компактный автоматический профиль данных для LLM | Юра | 24.10 00:00 | 24.10 01:00 |
 
 ## Как выполнить
 

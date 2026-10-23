@@ -10,12 +10,12 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S04](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S04.md) Собрать навигатор по материалам и комплектам данных | Артём | 23.10 20:00 | 23.10 21:00 |
-| [S08](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S08.md) Провести EDA регрессии и записать проверенные наблюдения | Артём | 23.10 21:00 | 23.10 23:00 |
-| [S13](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S13.md) Провести EDA классификации и оценить дисбаланс | Артём | 23.10 23:00 | 24.10 01:00 |
-| [S19](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S19.md) Свести EDA в короткий список решений и рисков | Артём | 24.10 09:00 | 24.10 10:00 |
-| [S27](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S27.md) Сверить решение с требованиями и собрать доказательства | Артём | 24.10 14:00 | 24.10 16:00 |
-| [S39](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S39.md) Подготовить понятное описание результата и материалы сдачи | Артём | 25.10 09:00 | 25.10 11:00 |
+| [S04 · #16](https://github.com/selecteg12/alfa-automl-hackathon/issues/16) Собрать навигатор по материалам и комплектам данных | Артём | 23.10 20:00 | 23.10 21:00 |
+| [S08 · #20](https://github.com/selecteg12/alfa-automl-hackathon/issues/20) Провести EDA регрессии и записать проверенные наблюдения | Артём | 23.10 21:00 | 23.10 23:00 |
+| [S13 · #25](https://github.com/selecteg12/alfa-automl-hackathon/issues/25) Провести EDA классификации и оценить дисбаланс | Артём | 23.10 23:00 | 24.10 01:00 |
+| [S19 · #31](https://github.com/selecteg12/alfa-automl-hackathon/issues/31) Свести EDA в короткий список решений и рисков | Артём | 24.10 09:00 | 24.10 10:00 |
+| [S27 · #39](https://github.com/selecteg12/alfa-automl-hackathon/issues/39) Сверить решение с требованиями и собрать доказательства | Артём | 24.10 14:00 | 24.10 16:00 |
+| [S39 · #51](https://github.com/selecteg12/alfa-automl-hackathon/issues/51) Подготовить понятное описание результата и материалы сдачи | Артём | 25.10 09:00 | 25.10 11:00 |
 
 ## Как выполнить
 

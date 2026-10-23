@@ -3,6 +3,7 @@ from pathlib import Path
 from datetime import datetime
 from collections import Counter
 import json
+import re
 
 ROOT = Path(__file__).resolve().parents[1]
 REPO = 'https://github.com/selecteg12/alfa-automl-hackathon'
@@ -405,6 +406,14 @@ def render():
         t['order']=n
         t['key']=f'S{n:02}'
         t['guide_path']=f'docs/tasks/steps/{t["key"]}.md'
+    # В карточках показываем номера Sxx, служебные коды I/Y/P/A/M остаются только в JSON.
+    def display(value):
+        return re.sub(r'\b[IYPAM]\d+\b',lambda m:by_code[m[0]]['key'] if m[0] in by_code else m[0],value)
+    for t in tasks:
+        for name in ['result','handoff']:
+            t[name]=display(t[name])
+        for name in ['steps','checks']:
+            t[name]=[display(value) for value in t[name]]
     # Проверка зависимостей, времени и отсутствия одновременных задач у одного человека.
     final=datetime.fromisoformat('2026-10-25T20:00:00+03:00')
     for t in tasks:
@@ -428,6 +437,7 @@ def render():
         resources='\n'.join(f'- [{MATERIALS[m][0]}]({blob(MATERIALS[m][1])})' for m in t['materials'])
         steps='\n\n'.join(f'{i}. {s}' for i,s in enumerate(t['steps'],1))
         checks='\n'.join('- [ ] '+s for s in t['checks'])
+        context_file={'owner:ivan':'ivan','owner:yura':'yura','owner:pm':'egor','owner:artem':'artem','owner:maxim':'maxim'}[t['ownerLabel']]
         text=f'''# {t['key']}. {t['title']}
 
 **Ответственный:** {t['owner']} · **Приоритет:** {t['priority']} · **Этап:** [#{int(t['parent'])}]({REPO}/issues/{int(t['parent'])})  
@@ -463,7 +473,7 @@ def render():
 
 После этой карточки открывается: {next_text}
 
-Технические изменения принимает Иван, комплектность — Егор. Для работы с агентом скопировать карточку целиком и [шаблон]({blob('docs/AGENT_TASK_PROMPT.md')}); человек проверяет выполненную работу. Пути ожидаемых новых отчётов в карточке — результат задачи, а не обещание, что файлы уже существуют. Секреты и CSV в Git не добавлять.
+Технические изменения принимает Иван, комплектность — Егор. Агенту полезно передать [вводную участника]({blob('docs/team-context/'+context_file+'.md')}) и эту карточку; запрос участник составляет сам, человек проверяет выполненную работу. Пути ожидаемых новых отчётов в карточке — результат задачи, а не обещание, что файлы уже существуют. Секреты и CSV в Git не добавлять.
 '''
         # Время оформляется отдельно от года, чтобы не получить "20:00.2026".
         text=text.replace(f'{fmt(t["start"])}.2026',datetime.fromisoformat(t['start']).strftime('%d.%m.2026 %H:%M'))

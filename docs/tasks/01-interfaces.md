@@ -10,9 +10,9 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S01](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S01.md) Согласовать контракт задачи и результатов ML-инструментов | Иван | 23.10 20:00 | 23.10 21:00 |
-| [S06](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S06.md) Научить агент читать описание новой задачи | Иван | 23.10 21:00 | 23.10 22:00 |
-| [S17](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S17.md) Выбрать базовые ML-конфигурации и план экспериментов | Иван | 24.10 09:00 | 24.10 11:00 |
+| [S01 · #13](https://github.com/selecteg12/alfa-automl-hackathon/issues/13) Согласовать контракт задачи и результатов ML-инструментов | Иван | 23.10 20:00 | 23.10 21:00 |
+| [S06 · #18](https://github.com/selecteg12/alfa-automl-hackathon/issues/18) Научить агент читать описание новой задачи | Иван | 23.10 21:00 | 23.10 22:00 |
+| [S17 · #29](https://github.com/selecteg12/alfa-automl-hackathon/issues/29) Выбрать базовые ML-конфигурации и план экспериментов | Иван | 24.10 09:00 | 24.10 11:00 |
 
 ## Как выполнить
 

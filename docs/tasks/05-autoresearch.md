@@ -10,8 +10,8 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S25](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S25.md) Сохранять историю экспериментов и лучший результат | Иван | 24.10 14:00 | 24.10 15:30 |
-| [S29](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S29.md) Замкнуть AutoResearch и ограничить время выполнения | Иван | 24.10 15:30 | 24.10 17:30 |
+| [S25 · #37](https://github.com/selecteg12/alfa-automl-hackathon/issues/37) Сохранять историю экспериментов и лучший результат | Иван | 24.10 14:00 | 24.10 15:30 |
+| [S29 · #41](https://github.com/selecteg12/alfa-automl-hackathon/issues/41) Замкнуть AutoResearch и ограничить время выполнения | Иван | 24.10 15:30 | 24.10 17:30 |
 
 ## Как выполнить
 

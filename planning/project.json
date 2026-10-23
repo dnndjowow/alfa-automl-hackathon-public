@@ -17,37 +17,98 @@
     },
     {
       "name": "Приоритет",
-      "type": "SINGLE_SELECT",
-      "options": [
-        "P0",
-        "P1"
-      ]
+      "type": "SINGLE_SELECT"
     },
     {
       "name": "Контрольная точка",
+      "type": "TEXT"
+    },
+    {
+      "name": "Порядок",
+      "type": "NUMBER"
+    },
+    {
+      "name": "Начать МСК",
+      "type": "TEXT"
+    },
+    {
+      "name": "Дедлайн МСК",
+      "type": "TEXT"
+    },
+    {
+      "name": "Дата сдачи",
+      "type": "DATE"
+    },
+    {
+      "name": "После",
       "type": "TEXT"
     }
   ],
   "views": [
     {
       "name": "Все задачи",
+      "number": 1,
       "layout": "BOARD_LAYOUT",
-      "number": 1
+      "filter": "label:\"type:task\""
     },
     {
       "name": "Иван",
+      "number": 2,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"owner:ivan\"",
-      "number": 2
+      "filter": "label:\"type:task\" label:\"owner:ivan\""
     },
     {
       "name": "Юра",
+      "number": 3,
       "layout": "BOARD_LAYOUT",
-      "filter": "label:\"owner:yura\"",
-      "number": 3
+      "filter": "label:\"type:task\" label:\"owner:yura\""
+    },
+    {
+      "name": "Артём",
+      "number": 4,
+      "layout": "BOARD_LAYOUT",
+      "filter": "label:\"type:task\" label:\"owner:artem\""
+    },
+    {
+      "name": "Максим",
+      "number": 5,
+      "layout": "BOARD_LAYOUT",
+      "filter": "label:\"type:task\" label:\"owner:maxim\""
+    },
+    {
+      "name": "Егор / PM",
+      "number": 6,
+      "layout": "BOARD_LAYOUT",
+      "filter": "label:\"type:task\" label:\"owner:pm\""
+    },
+    {
+      "name": "Порядок выполнения",
+      "number": 7,
+      "layout": "TABLE_LAYOUT",
+      "filter": "label:\"type:task\""
     }
   ],
-  "invite_collaborators": false,
+  "invite_collaborators": true,
   "url": "https://github.com/users/selecteg12/projects/2",
-  "number": 2
+  "number": 2,
+  "start": "2026-10-23T20:00:00+03:00",
+  "deadline": "2026-10-25T20:00:00+03:00",
+  "collaborators": [
+    {
+      "github": "Shyrup4ik",
+      "role": "WRITER"
+    },
+    {
+      "github": "osin1500maxim",
+      "role": "WRITER"
+    },
+    {
+      "github": "dnndjowow",
+      "role": "WRITER"
+    },
+    {
+      "github": "seelffff",
+      "role": "WRITER"
+    }
+  ]
 }

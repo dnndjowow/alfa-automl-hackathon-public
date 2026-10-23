@@ -10,9 +10,9 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S23](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S23.md) Реализовать запись и валидацию submission.csv | Юра | 24.10 12:00 | 24.10 13:00 |
-| [S24](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S24.md) Соединить полный запуск и передать первую рабочую версию | Юра | 24.10 13:00 | 24.10 14:00 |
-| [S31](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S31.md) Проверить сбои экспериментов и сохранение раннего ответа | Юра | 24.10 17:30 | 24.10 19:00 |
+| [S23 · #35](https://github.com/selecteg12/alfa-automl-hackathon/issues/35) Реализовать запись и валидацию submission.csv | Юра | 24.10 12:00 | 24.10 13:00 |
+| [S24 · #36](https://github.com/selecteg12/alfa-automl-hackathon/issues/36) Соединить полный запуск и передать первую рабочую версию | Юра | 24.10 13:00 | 24.10 14:00 |
+| [S31 · #43](https://github.com/selecteg12/alfa-automl-hackathon/issues/43) Проверить сбои экспериментов и сохранение раннего ответа | Юра | 24.10 17:30 | 24.10 19:00 |
 
 ## Как выполнить
 

@@ -10,12 +10,12 @@
 
 | Карточка и результат | Исполнитель | Начать МСК | Сдать до МСК |
 | --- | --- | --- | --- |
-| [S05](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S05.md) Проверить ссылки и подготовить шаблон отчёта о запуске | Максим | 23.10 20:00 | 23.10 21:00 |
-| [S14](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S14.md) Повторить подготовку окружения по инструкции | Максим | 23.10 23:00 | 24.10 01:00 |
-| [S28](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S28.md) Независимо повторить обе публичные команды | Максим | 24.10 14:00 | 24.10 16:00 |
-| [S34](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S34.md) Повторить проверки ошибок и обновить список багов | Максим | 24.10 19:00 | 24.10 21:00 |
-| [S41](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S41.md) Проверить состав финального архива по чек-листу | Максим | 25.10 10:00 | 25.10 11:00 |
-| [S42](https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/steps/S42.md) Собрать результаты полных прогонов и финальный список багов | Максим | 25.10 11:00 | 25.10 16:00 |
+| [S05 · #17](https://github.com/selecteg12/alfa-automl-hackathon/issues/17) Проверить ссылки и подготовить шаблон отчёта о запуске | Максим | 23.10 20:00 | 23.10 21:00 |
+| [S14 · #26](https://github.com/selecteg12/alfa-automl-hackathon/issues/26) Повторить подготовку окружения по инструкции | Максим | 23.10 23:00 | 24.10 01:00 |
+| [S28 · #40](https://github.com/selecteg12/alfa-automl-hackathon/issues/40) Независимо повторить обе публичные команды | Максим | 24.10 14:00 | 24.10 16:00 |
+| [S34 · #46](https://github.com/selecteg12/alfa-automl-hackathon/issues/46) Повторить проверки ошибок и обновить список багов | Максим | 24.10 19:00 | 24.10 21:00 |
+| [S41 · #53](https://github.com/selecteg12/alfa-automl-hackathon/issues/53) Проверить состав финального архива по чек-листу | Максим | 25.10 10:00 | 25.10 11:00 |
+| [S42 · #54](https://github.com/selecteg12/alfa-automl-hackathon/issues/54) Собрать результаты полных прогонов и финальный список багов | Максим | 25.10 11:00 | 25.10 16:00 |
 
 ## Как выполнить
 
