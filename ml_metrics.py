@@ -190,11 +190,17 @@ def compute(name, y_true, y_pred, labels=None) -> float:
     return get_metric(name)(y_true, y_pred, labels)
 
 
-def is_better(name, new: float, best: float) -> bool:
-    """Строго ли `new` лучше `best` с учётом направления метрики (NaN не лучше)."""
-    if np.isnan(new):
+def _missing(value) -> bool:
+    return value is None or (isinstance(value, (float, np.floating)) and np.isnan(value))
+
+
+def is_better(name, new, best) -> bool:
+    """Строго ли `new` лучше `best` с учётом направления метрики.
+
+    None и NaN (например, score неудачного эксперимента) не лучше ничего; любое число лучше них."""
+    if _missing(new):
         return False
-    if np.isnan(best):
+    if _missing(best):
         return True
     return new > best if get_metric(name).higher_is_better else new < best
 

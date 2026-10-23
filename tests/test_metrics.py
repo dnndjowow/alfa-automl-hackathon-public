@@ -119,6 +119,13 @@ class RegistryTest(unittest.TestCase):
         self.assertFalse(mm.is_better("rmse", float("nan"), 2.0))
         self.assertTrue(mm.is_better("rmse", 2.0, float("nan")))
 
+    def test_is_better_with_missing_scores(self):
+        # ревью: score неудачного эксперимента равен None, и is_better падал с TypeError
+        self.assertFalse(mm.is_better("rmse", None, 2.0))
+        self.assertTrue(mm.is_better("rmse", 2.0, None))
+        self.assertFalse(mm.is_better("f1_macro", None, None))
+        self.assertTrue(mm.is_better("f1_macro", 0.5, float("nan")))
+
     def test_worst_value(self):
         self.assertEqual(mm.worst_value("rmse"), np.inf)
         self.assertEqual(mm.worst_value("f1_macro"), -np.inf)
