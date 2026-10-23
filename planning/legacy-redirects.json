@@ -1,0 +1,282 @@
+{
+  "13": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "14": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "15": {
+    "target_code": "pm_environment",
+    "target_key": "A03",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A03.md"
+  },
+  "16": {
+    "target_code": "artem_eda",
+    "target_key": "A04",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A04.md"
+  },
+  "17": {
+    "target_code": "maxim_reproduce",
+    "target_key": "A05",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A05.md"
+  },
+  "18": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "19": {
+    "target_code": "pm_environment",
+    "target_key": "A03",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A03.md"
+  },
+  "20": {
+    "target_code": "artem_eda",
+    "target_key": "A04",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A04.md"
+  },
+  "21": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "22": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "23": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "24": {
+    "target_code": "pm_environment",
+    "target_key": "A03",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A03.md"
+  },
+  "25": {
+    "target_code": "artem_eda",
+    "target_key": "A04",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A04.md"
+  },
+  "26": {
+    "target_code": "maxim_reproduce",
+    "target_key": "A05",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A05.md"
+  },
+  "27": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "28": {
+    "target_code": "pm_environment",
+    "target_key": "A03",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A03.md"
+  },
+  "29": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "30": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "31": {
+    "target_code": "artem_eda",
+    "target_key": "A04",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A04.md"
+  },
+  "32": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "33": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "34": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "35": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "36": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "37": {
+    "target_code": "ivan_research",
+    "target_key": "A06",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A06.md"
+  },
+  "38": {
+    "target_code": "pm_first_submit",
+    "target_key": "A08",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A08.md"
+  },
+  "39": {
+    "target_code": "artem_cases",
+    "target_key": "A09",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A09.md"
+  },
+  "40": {
+    "target_code": "maxim_reproduce",
+    "target_key": "A05",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A05.md"
+  },
+  "41": {
+    "target_code": "ivan_research",
+    "target_key": "A06",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A06.md"
+  },
+  "42": {
+    "target_code": "ivan_generalization",
+    "target_key": "A10",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A10.md"
+  },
+  "43": {
+    "target_code": "yura_reliability",
+    "target_key": "A07",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A07.md"
+  },
+  "44": {
+    "target_code": "ivan_generalization",
+    "target_key": "A10",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A10.md"
+  },
+  "45": {
+    "target_code": "yura_reliability",
+    "target_key": "A07",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A07.md"
+  },
+  "46": {
+    "target_code": "maxim_reproduce",
+    "target_key": "A05",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A05.md"
+  },
+  "47": {
+    "target_code": "ivan_final",
+    "target_key": "A12",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A12.md"
+  },
+  "48": {
+    "target_code": "ivan_final",
+    "target_key": "A12",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A12.md"
+  },
+  "49": {
+    "target_code": "ivan_final",
+    "target_key": "A12",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A12.md"
+  },
+  "50": {
+    "target_code": "yura_final",
+    "target_key": "A11",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A11.md"
+  },
+  "51": {
+    "target_code": "artem_cases",
+    "target_key": "A09",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A09.md"
+  },
+  "52": {
+    "target_code": "pm_release",
+    "target_key": "A13",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A13.md"
+  },
+  "53": {
+    "target_code": "maxim_final",
+    "target_key": "A14",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A14.md"
+  },
+  "54": {
+    "target_code": "maxim_final",
+    "target_key": "A14",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A14.md"
+  },
+  "55": {
+    "target_code": "ivan_final",
+    "target_key": "A12",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A12.md"
+  },
+  "56": {
+    "target_code": "pm_release",
+    "target_key": "A13",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A13.md"
+  },
+  "1": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "2": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "3": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "4": {
+    "target_code": "ivan_agent",
+    "target_key": "A01",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A01.md"
+  },
+  "5": {
+    "target_code": "ivan_research",
+    "target_key": "A06",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A06.md"
+  },
+  "6": {
+    "target_code": "yura_pipeline",
+    "target_key": "A02",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A02.md"
+  },
+  "7": {
+    "target_code": "pm_environment",
+    "target_key": "A03",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A03.md"
+  },
+  "8": {
+    "target_code": "ivan_generalization",
+    "target_key": "A10",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A10.md"
+  },
+  "9": {
+    "target_code": "ivan_final",
+    "target_key": "A12",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A12.md"
+  },
+  "10": {
+    "target_code": "pm_release",
+    "target_key": "A13",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A13.md"
+  },
+  "11": {
+    "target_code": "artem_eda",
+    "target_key": "A04",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A04.md"
+  },
+  "12": {
+    "target_code": "maxim_reproduce",
+    "target_key": "A05",
+    "url": "https://github.com/selecteg12/alfa-automl-hackathon/blob/main/docs/tasks/current/A05.md"
+  }
+}

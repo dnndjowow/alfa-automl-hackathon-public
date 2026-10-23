@@ -18,7 +18,7 @@ body:
     id: goal
     attributes:
       label: Цель и что сделать
-      description: Какой результат нужен и какие действия входят в задачу.
+      description: Один полезный готовый результат. Выбор реализации остаётся у владельца.
     validations:
       required: true
   - type: textarea
@@ -32,7 +32,7 @@ body:
     id: steps
     attributes:
       label: Пошаговый план
-      description: С чего начать, что выполнить по порядку и какой промежуточный результат получить.
+      description: Ориентир и необходимые входы. Не дробить обычные действия на отдельные карточки и согласования.
       placeholder: "1. ..."
     validations:
       required: true
