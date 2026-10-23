@@ -184,7 +184,10 @@ def build_profile(data: ml_io.TaskData) -> dict:
     if len(targets) > 1:
         task = {"type": "multi_target", "ambiguous": True, "notes": [f"несколько таргетов: {targets}"]}
     else:
-        task = ml_schema.suggest_task_type(y, data.text)
+        metric = profile["metric"]
+        # метрика — сильный довод о типе задачи, только если она найдена по фразе «основная метрика»
+        strong = metric["primary"] if metric["source"] == "фраза об основной метрике" else None
+        task = ml_schema.suggest_task_type(y, data.text, strong)
     profile["task"] = task
     if y is not None and task["type"] != "unknown":
         profile["target"] = profile_target(y, task["type"])

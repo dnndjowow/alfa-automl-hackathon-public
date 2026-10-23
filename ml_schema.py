@@ -16,7 +16,8 @@ import pandas as pd
 
 import ml_metrics
 
-_MAX_INT_CLASSES = 20
+_DEFAULT_INT_CLASSES = 20   # целый таргет с не более чем столькими значениями по умолчанию считаем классами
+_MAX_INT_CLASSES = 200      # до этого порога целый таргет допускает оба прочтения
 _CLS_WORDS = re.compile(r"классификац|classif", re.IGNORECASE)
 _REG_WORDS = re.compile(r"регресс|regress", re.IGNORECASE)
 _ID_NAME = re.compile(r"id|index|row_?id|uid", re.IGNORECASE)
@@ -68,9 +69,11 @@ def infer_schema(train, test=None, sample_submission=None, dictionary=None) -> d
 
     id_cols = []
     if sample_submission is not None and test is not None and len(sample_submission) == len(test):
+        # id уникален и не помечен словарём как таргет (заглушка таргета в test тоже может совпасть)
         id_cols = [
             c for c in sample_submission.columns
-            if c in test.columns and np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy())
+            if c in test.columns and roles.get(c) != "target" and test[c].is_unique
+            and np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy())
         ]
         if id_cols:
             sources["id"] = "значения sample_submission совпадают с test"
@@ -139,6 +142,9 @@ def resolve_schema(suggestion: dict, id_cols=None, target_cols=None) -> Schema:
             f"схема неуверенная ({suggestion['confidence']}): {suggestion['notes'] or 'один источник'}; "
             "передайте id_cols и target_cols"
         )
+    overlap = sorted(set(ids) & set(targets))
+    if overlap:
+        raise SchemaError(f"столбцы {overlap} не могут быть одновременно id и таргетом")
     pool = suggestion["shared_columns"]
     known = set(pool) | set(suggestion["target_cols"]) | set(suggestion["id_cols"])
     unknown = [c for c in targets + ids if c not in known]
@@ -158,47 +164,61 @@ def _text_hint(text: str):
     return None
 
 
-def suggest_task_type(y: Optional[pd.Series], text: str = "") -> dict:
-    """regression | binary | multiclass | unknown; ambiguous=True, если данные допускают оба прочтения."""
+def suggest_task_type(y: Optional[pd.Series], text: str = "", metric: Optional[str] = None) -> dict:
+    """regression | binary | multiclass | unknown.
+
+    Данные дают первое прочтение. Если они допускают оба (два числа, целые числа с умеренным
+    числом значений), решает семейство основной метрики, а без неё — текст задачи. Если довод
+    спорит с однозначными данными, данные сохраняются, но ambiguous=True и есть заметка.
+    """
     notes = []
     if y is None or len(y.dropna()) == 0:
         return {"type": "unknown", "ambiguous": True, "notes": ["нет таргета для анализа"]}
     values = y.dropna()
     n_unique = int(values.nunique())
     numeric = pd.api.types.is_numeric_dtype(values) and not pd.api.types.is_bool_dtype(values)
-    ambiguous = False
     if not numeric:
-        kind = "binary" if n_unique == 2 else "multiclass"
+        kind, firm = ("binary" if n_unique == 2 else "multiclass"), True
     elif n_unique == 2:
-        kind = "binary"
+        kind, firm = "binary", False
     elif bool((values % 1 == 0).all()) and n_unique <= _MAX_INT_CLASSES:
-        kind, ambiguous = "multiclass", True
+        kind, firm = ("multiclass" if n_unique <= _DEFAULT_INT_CLASSES else "regression"), False
     else:
-        kind = "regression"
+        kind, firm = "regression", True
 
-    hint = _text_hint(text)
-    if hint:
-        family = "regression" if kind == "regression" else "classification"
-        if hint != family:
-            if ambiguous:
-                kind = "regression" if hint == "regression" else kind
-                ambiguous = False
-                notes.append(f"тип выбран по тексту задачи ({hint})")
-            else:
-                notes.append(f"текст задачи говорит {hint}, а данные — {family}; выбраны данные")
-        elif ambiguous:
-            ambiguous = False
-            notes.append(f"тип подтверждён текстом задачи ({hint})")
-    return {"type": kind, "ambiguous": ambiguous, "notes": notes}
+    evidence, source = None, None
+    if metric:
+        try:
+            evidence, source = ml_metrics.get_metric(metric).task, f"метрика {metric}"
+        except ml_metrics.MetricError:
+            notes.append(f"метрика {metric!r} неизвестна, тип по ней не определить")
+    if evidence is None:
+        evidence, source = _text_hint(text), "текст задачи"
+    family = "regression" if kind == "regression" else "classification"
+    if evidence is None:
+        return {"type": kind, "ambiguous": not firm, "notes": notes}
+    if evidence == family:
+        if not firm:
+            notes.append(f"тип подтверждён: {source}")
+        return {"type": kind, "ambiguous": False, "notes": notes}
+    if not firm:
+        kind = "regression" if evidence == "regression" else ("binary" if n_unique == 2 else "multiclass")
+        notes.append(f"тип выбран по доводу «{source}» ({evidence}); данные допускали оба прочтения")
+        return {"type": kind, "ambiguous": False, "notes": notes}
+    notes.append(f"{source} указывает на {evidence}, а данные однозначно — {family}; выбраны данные")
+    return {"type": kind, "ambiguous": True, "notes": notes}
 
 
 def mentioned_metrics(text: str) -> dict:
     """Метрики из task.md. primary — по фразам вроде «основная метрика», иначе первое упоминание."""
     clean = text.replace("*", "").replace("`", "")
+    balanced = [m.span() for m in re.finditer(_METRIC_PATTERNS["balanced_accuracy"], clean, flags=re.IGNORECASE)]
     hits = []
     for name, pattern in _METRIC_PATTERNS.items():
-        scan = re.sub(_METRIC_PATTERNS["balanced_accuracy"], " ", clean, flags=re.IGNORECASE) if name == "accuracy" else clean
-        hits += [(m.start(), name) for m in re.finditer(pattern, scan, flags=re.IGNORECASE)]
+        for m in re.finditer(pattern, clean, flags=re.IGNORECASE):
+            if name == "accuracy" and any(a <= m.start() < b for a, b in balanced):
+                continue  # «accuracy» внутри «balanced accuracy» — не отдельная метрика
+            hits.append((m.start(), name))
     hits.sort()
     mentioned = list(dict.fromkeys(name for _, name in hits))
     primary, source = None, None

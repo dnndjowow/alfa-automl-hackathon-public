@@ -97,7 +97,70 @@ class TaskTypeTest(unittest.TestCase):
         self.assertTrue(guess["notes"])
 
 
+class TaskTypeEvidenceTest(unittest.TestCase):
+    def test_many_integer_classes_follow_the_metric(self):
+        # ревью: 30 целых классов при «классификации» и Macro F1 давали regression
+        y = pd.Series(np.tile(np.arange(30), 10))
+        guess = ms.suggest_task_type(y, "Многоклассовая классификация. Основная метрика — Macro F1", "f1_macro")
+        self.assertEqual((guess["type"], guess["ambiguous"]), ("multiclass", False))
+        self.assertEqual(ms.suggest_task_type(y, "Многоклассовая классификация")["type"], "multiclass")
+        self.assertEqual(ms.suggest_task_type(y)["type"], "regression")  # без доводов — число
+
+    def test_two_numeric_values_with_regression_evidence(self):
+        y = pd.Series([1.5, 7.5] * 50)
+        self.assertEqual(ms.suggest_task_type(y, "Постройте регрессионную модель")["type"], "regression")
+        self.assertEqual(ms.suggest_task_type(y, "", "rmse")["type"], "regression")
+        self.assertEqual(ms.suggest_task_type(y)["type"], "binary")
+
+    def test_metric_beats_text(self):
+        y = pd.Series(np.random.default_rng(0).integers(0, 5, 200))
+        self.assertEqual(ms.suggest_task_type(y, "регрессия регрессия", "f1_macro")["type"], "multiclass")
+
+    def test_firm_data_wins_but_is_flagged(self):
+        labels = pd.Series(["a", "b", "c"] * 30)
+        guess = ms.suggest_task_type(labels, "", "rmse")
+        self.assertEqual((guess["type"], guess["ambiguous"]), ("multiclass", True))
+        self.assertTrue(guess["notes"])
+
+    def test_unknown_metric_falls_back_to_text(self):
+        y = pd.Series(np.tile(np.arange(30), 10))
+        guess = ms.suggest_task_type(y, "задача классификации", "ndcg")
+        self.assertEqual(guess["type"], "multiclass")
+        self.assertTrue(any("неизвестна" in n for n in guess["notes"]))
+
+
+class RoleOverlapTest(unittest.TestCase):
+    def test_target_placeholder_in_test_is_not_an_id(self):
+        # ревью: заглушка y=0 в test совпадала с sample и становилась id
+        train = pd.DataFrame({"id": [1, 2, 3], "x": [1, 2, 3], "y": [5, 6, 7]})
+        test = pd.DataFrame({"id": [4, 5], "x": [1, 2], "y": [0, 0]})
+        sample = pd.DataFrame({"id": [4, 5], "y": [0, 0]})
+        dictionary = pd.DataFrame({"feature": ["id", "x", "y"], "role": ["id", "feature", "target"]})
+        for d in (dictionary, None):
+            suggestion = ms.infer_schema(train, test, sample, d)
+            self.assertEqual(suggestion["id_cols"], ["id"])
+        suggestion = ms.infer_schema(train, test, sample, dictionary)
+        self.assertEqual(suggestion["target_cols"], ["y"])
+        schema = ms.resolve_schema(suggestion)
+        self.assertEqual((schema.id_cols, schema.target_cols), (("id",), ("y",)))
+
+    def test_resolve_refuses_overlapping_roles(self):
+        train = pd.DataFrame({"id": [1, 2, 3], "x": [1, 2, 3], "y": [5, 6, 7]})
+        test = pd.DataFrame({"id": [4, 5], "x": [1, 2]})
+        suggestion = ms.infer_schema(train, test)
+        with self.assertRaises(ms.SchemaError):
+            ms.resolve_schema(suggestion, id_cols=["id", "y"], target_cols=["y"])
+
+
 class MetricMentionTest(unittest.TestCase):
+    def test_balanced_accuracy_before_primary_accuracy(self):
+        # ревью: замена текста сдвигала позиции, и основной выбиралась balanced_accuracy
+        found = ms.mentioned_metrics("Дополнительно balanced accuracy. Основная метрика — accuracy.")
+        self.assertEqual(found["primary"], "accuracy")
+        self.assertEqual(found["mentioned"], ["balanced_accuracy", "accuracy"])
+        found = ms.mentioned_metrics("Основная метрика — balanced accuracy, ещё смотрим accuracy.")
+        self.assertEqual(found["primary"], "balanced_accuracy")
+
     def test_primary_metric_phrases(self):
         text = "Метрика оценки — **RMSE** на исходной шкале.\nМеньшее значение лучше."
         found = ms.mentioned_metrics(text)
