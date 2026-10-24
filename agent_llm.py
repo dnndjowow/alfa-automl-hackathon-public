@@ -29,18 +29,21 @@ SYSTEM_PROMPT = """Ты — автономный ML-инженер. Решаеш
    (lightgbm / xgboost / catboost), learning_rate, регуляризация, глубина, log1p для скошенного
    неотрицательного таргета регрессии, другая схема валидации, если текущая не отражает test.
    Пиши гипотезу в поле hypothesis. Сравнивай только запуски на одной схеме валидации.
-4. Лучший запуск обучи на всём train через finalize (он запишет submission.csv). Первый удачный
-   запуск код записывает сам — это страховка, улучшай её.
+4. Когда есть 2–4 удачных запуска разных моделей на одной схеме, вызови blend: смесь по OOF обычно
+   лучше любой одиночной модели. Лучший запуск или смесь обучи на всём train через finalize (он запишет
+   submission.csv). Первый удачный запуск код записывает сам — это страховка, улучшай её.
 5. Вызови finish с причиной, когда прирост мал, время на исходе или идеи исчерпаны.
    Остановиться после нескольких экспериментов нормально; бесконечный перебор — нет.
 
 Следи за time_left_s в ответах инструментов: финальное обучение занимает примерно время одной
-части валидации с запасом. Отвечай кратко; каждое сообщение должно содержать вызов инструмента."""
+части валидации с запасом. Шаги диалога платные: обычно хватает 5–10 вызовов. Отвечай кратко;
+каждое сообщение должно содержать вызов инструмента."""
 
 TEXT_FORMAT = ('Вызов инструмента пиши одним JSON-объектом без пояснений вокруг: '
                '{"tool": "<имя>", "arguments": {...}}. Например: '
                '{"tool": "evaluate", "arguments": {"model": "lightgbm", "hypothesis": "база"}}')
 
+DEFAULT_MODEL = "qwen/qwen3.8-27b"   # из инструкции организаторов трека AutoML
 _THINK = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 _TOOL_NAMES = {spec["name"] for spec in agent_tools.TOOL_SPECS}
 
@@ -65,17 +68,21 @@ class OpenAIChat:
     def __init__(self, model: Optional[str] = None, timeout: float = 240.0, retries: int = 4):
         from openai import OpenAI
 
-        self.model = model or os.environ.get("OPENAI_MODEL")
-        if not self.model or not os.environ.get("OPENAI_API_KEY"):
-            raise LLMUnavailable("не заданы OPENAI_MODEL / OPENAI_API_KEY", fatal=True)
+        # по инструкции организаторов OPENAI_MODEL может быть не задан: прокси сам подставит модель задачи
+        self.model = model or os.environ.get("OPENAI_MODEL") or DEFAULT_MODEL
+        missing = [v for v in ("OPENAI_API_KEY", "OPENAI_BASE_URL") if not os.environ.get(v)]
+        if missing:
+            # без адреса клиент ушёл бы на api.openai.com и отправил туда выданный ключ
+            raise LLMUnavailable(f"не заданы {', '.join(missing)}", fatal=True)
         # OPENAI_BASE_URL клиент берёт из окружения сам
         self.client = OpenAI(timeout=timeout, max_retries=0)
-        self.retries = retries
-        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "requests": 0}
+        self.retries, self.timeout = retries, timeout
+        self.usage = {"prompt_tokens": 0, "completion_tokens": 0, "requests": 0, "cost": 0.0}
         self.tools_supported = True
+        self.time_left = None                 # run_agent подставляет session.time_left
 
     def _request(self, messages, tools):
-        kwargs = {"model": self.model, "messages": messages}
+        kwargs = {"model": self.model, "messages": messages, "timeout": self._timeout()}
         if self.tools_supported:
             kwargs.update(tools=tools, tool_choice="auto")
         response = self.client.chat.completions.create(**kwargs)
@@ -83,6 +90,7 @@ class OpenAIChat:
         if response.usage:
             self.usage["prompt_tokens"] += response.usage.prompt_tokens or 0
             self.usage["completion_tokens"] += response.usage.completion_tokens or 0
+            self.usage["cost"] = round(self.usage["cost"] + float(getattr(response.usage, "cost", 0) or 0), 4)
         if not response.choices:
             raise LLMUnavailable("пустой ответ: нет choices")
         message = response.choices[0].message
@@ -90,9 +98,16 @@ class OpenAIChat:
                  for i, c in enumerate(message.tool_calls or []) if c.function is not None]
         return {"content": message.content or "", "tool_calls": calls}
 
+    def _timeout(self) -> float:
+        if self.time_left is None:
+            return self.timeout
+        return max(15.0, min(self.timeout, self.time_left() - 60.0))
+
     def __call__(self, messages: list, tools: list) -> dict:
         last = None
         for attempt in range(self.retries):
+            if self.time_left is not None and self.time_left() < 75:
+                break                          # ждать ответа модели уже некогда
             try:
                 return self._request(messages, tools)
             except LLMUnavailable as error:
@@ -102,13 +117,13 @@ class OpenAIChat:
                 status = getattr(error, "status_code", None)
                 if status in (401, 403, 404):
                     raise LLMUnavailable(f"{type(error).__name__} {status}: {str(error)[:300]}", fatal=True)
-                if self.tools_supported and status is not None and status != 429:
-                    # сервер мог отвергнуть tools: пробуем тот же запрос без них
+                text = str(error).lower()
+                if self.tools_supported and status in (400, 422) and ("tool" in text or "function" in text):
+                    # сервер не принимает tools: дальше вызовы инструментов читаются из текста ответа
                     self.tools_supported = False
                     try:
                         return self._request(messages, tools)
                     except Exception as retry_error:
-                        self.tools_supported = True
                         last = retry_error
             if attempt < self.retries - 1:
                 time.sleep(min(5 * 2 ** attempt, 40))
@@ -182,8 +197,9 @@ def runs_table(session: agent_tools.Session) -> str:
     return head + f"Записан ответ: {session.written}. Запуски:\n" + ("\n".join(rows) or "нет")
 
 
-def compact(messages: list, session: agent_tools.Session, keep: int = 14) -> list:
-    """Оставить system, первое сообщение со сводкой запусков и хвост диалога с целыми парами вызов-ответ."""
+def compact(messages: list, session: agent_tools.Session, keep: int = 14, base_first: Optional[dict] = None) -> list:
+    """Оставить system, исходное первое сообщение со свежей сводкой запусков и хвост диалога с целыми
+    парами вызов-ответ. Сводка строится от исходного сообщения, иначе копии накапливаются."""
     if len(messages) <= keep + 2:
         return messages
     cut = len(messages) - keep
@@ -191,7 +207,7 @@ def compact(messages: list, session: agent_tools.Session, keep: int = 14) -> lis
         cut += 1
     if cut >= len(messages):
         return messages
-    first = dict(messages[1])
+    first = dict(base_first or messages[1])
     first["content"] = first["content"] + "\n\n# Что уже сделано (сводка ранних шагов)\n\n" + runs_table(session)
     return [messages[0], first] + messages[cut:]
 
@@ -202,12 +218,18 @@ def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40,
     tools = agent_tools.openai_tools()
     tools_in_text = getattr(chat, "tools_supported", True) is False
     messages = initial_messages(session, tools_in_text)
+    base_first = messages[1]
+    if hasattr(chat, "time_left"):
+        chat.time_left = session.time_left   # клиент не ждёт ответа дольше, чем осталось времени
     idle = steps = failures = 0
     while steps < max_steps and session.finished is None:
         if session.time_left() < min_time_s:
             log("[agent] время на исходе: выходим из диалога")
             break
-        messages = compact(messages, session)
+        messages = compact(messages, session, base_first=base_first)
+        if not tools_in_text and getattr(chat, "tools_supported", True) is False:
+            tools_in_text = True              # клиент перешёл на текстовые вызовы: даём формат в system
+            messages[0] = initial_messages(session, True)[0]
         try:
             reply = chat(messages, tools)
         except LLMUnavailable as error:

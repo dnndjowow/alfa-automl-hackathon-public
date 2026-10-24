@@ -41,7 +41,15 @@ _RESERVED_PARAMS = {
     "allow_writing_files", "train_dir", "callbacks", "random_state", "random_seed", "seed",
     "n_estimators", "iterations", "num_boost_round", "num_iterations", "early_stopping_rounds",
     "eval_set", "task_type", "device", "device_type", "gpu_id", "gpu_platform_id", "objective_type",
+    # синонимы числа раундов и ранней остановки: роняют fit_predict или молча урезают модель (ml_models)
+    "early_stopping", "early_stopping_round", "n_iter_no_change", "num_trees", "num_round", "num_rounds",
+    "n_iter", "max_iter", "num_boost_round", "eta", "learning_rate", "shrinkage_rate",
 }
+# CatBoost не понимает типичные параметры LightGBM/XGBoost: переводим или отбрасываем
+_CATBOOST_RENAME = {"max_depth": "depth", "colsample_bytree": "rsm", "feature_fraction": "rsm",
+                    "colsample_bylevel": "rsm", "reg_lambda": "l2_leaf_reg", "lambda_l2": "l2_leaf_reg"}
+_CATBOOST_DROP = {"num_leaves", "min_child_samples", "min_data_in_leaf", "min_child_weight", "gamma",
+                  "reg_alpha", "lambda_l1", "class_weight", "subsample_freq", "bagging_freq", "max_bin_by_feature"}
 _VALIDATION_KEYS = ("strategy", "n_splits", "column", "direction")
 _PROBA_WORDS = re.compile(r"вероятност|probabilit|\bgini\b|джини|\bauc\b|log[\s_-]*loss", re.IGNORECASE)
 _POSITIVE_WORDS = {"1", "true", "yes", "да", "positive", "pos"}
@@ -71,8 +79,9 @@ EXTRA_METRICS = {m.name: m for m in (
     ml_metrics.Metric("mape", _mape, False, "regression", "values"),
     ml_metrics.Metric("smape", _smape, False, "regression", "values"),
 )}
-_EXTRA_PATTERNS = {"rmsle": r"\brmsle\b|root mean squared log", "msle": r"\bmsle\b|mean squared log",
-                   "mape": r"\bmape\b|mean absolute percentage", "smape": r"\bsmape\b|symmetric mean absolute"}
+_EXTRA_PATTERNS = {"rmsle": r"\brmsle\b|root mean squared log|rmse\s+(?:между\s+|of\s+(?:the\s+)?)(?:log|логарифм)",
+                   "msle": r"\bmsle\b|mean squared log", "mape": r"\bmape\b|mean absolute percentage",
+                   "smape": r"\bsmape\b|symmetric mean absolute"}
 _METRIC_ALIASES = {"gini": "roc_auc", "giniindex": "roc_auc", "rocaucscore": "roc_auc",
                    "multiclasslogloss": "logloss", "multilogloss": "logloss",
                    "rootmeansquaredlogarithmicerror": "rmsle", "meanabsolutepercentageerror": "mape"}
@@ -94,14 +103,47 @@ def resolve_metric(name) -> ml_metrics.Metric:
             raise ml_metrics.MetricError(f"неизвестная метрика {name!r}; доступны: {', '.join(known)}")
 
 
-def detect_extra_metric(text: str) -> Optional[str]:
-    """Метрика из EXTRA_METRICS, упомянутая в условии (её не находит ml_schema)."""
+_BINARY_METRICS = {"f1": "f1", "f1score": "f1", "f1binary": "f1", "precision": "precision", "recall": "recall",
+                   "sensitivity": "recall"}
+
+
+def _binary_metric(kind: str, positive_code: int) -> ml_metrics.Metric:
+    """F1 / precision / recall положительного класса; метки приходят кодами 0..K-1."""
+    from sklearn import metrics as skm
+    scorer = {"f1": skm.f1_score, "precision": skm.precision_score, "recall": skm.recall_score}[kind]
+
+    def fn(yt, yp, labels):
+        return float(scorer(np.asarray(yt) == positive_code, np.asarray(yp) == positive_code, zero_division=0))
+    return ml_metrics.Metric(kind, fn, True, "classification", "labels")
+
+
+def detect_extra_metric(text: str, core_primary: Optional[str] = None) -> Optional[str]:
+    """Метрика из EXTRA_METRICS, упомянутая в условии (её не находит ml_schema).
+
+    Если ядро нашло основную метрику, своя побеждает, только если она ближе к фразе
+    «основная метрика / метрика — / качество —», чем метрика ядра."""
+    text = (text or "").replace("*", "").replace("`", "")
     hits = []
     for name, pattern in _EXTRA_PATTERNS.items():
-        match = re.search(pattern, text or "", flags=re.IGNORECASE)
+        match = re.search(pattern, text, flags=re.IGNORECASE)
         if match:
             hits.append((match.start(), name))
-    return min(hits)[1] if hits else None
+    if not hits:
+        return None
+    if not core_primary:
+        return min(hits)[1]
+    core_pattern = getattr(ml_schema, "_METRIC_PATTERNS", {}).get(core_primary)
+    phrase = re.compile(getattr(ml_schema, "_PRIMARY_PHRASE").pattern + r"|качеств\w*\s*[—:-]", re.IGNORECASE)
+    for found in phrase.finditer(text):
+        after = text[found.end(): found.end() + 150]
+        core = re.search(core_pattern, after, flags=re.IGNORECASE) if core_pattern else None
+        extra = [(re.search(_EXTRA_PATTERNS[n], after, flags=re.IGNORECASE), n) for _, n in hits]
+        extra = [(m.start(), n) for m, n in extra if m]
+        if extra and (core is None or min(extra)[0] <= core.start()):
+            return min(extra)[1]
+        if core is not None:
+            return None
+    return None
 
 
 def _short(text, limit=_TEXT_LIMIT):
@@ -168,9 +210,13 @@ def match_class_columns(columns, classes) -> Optional[dict]:
 def guess_positive_class(classes, y: pd.Series, text: str):
     """Класс, вероятность которого пишем в бинарной задаче.
 
-    1) класс, названный в условии рядом со словом «вероятность»; 2) 1 / true / yes;
+    Числовые метки: 1 (или большая) — так принято, а «вероятность от 0 до 1» в тексте не должна сбивать.
+    Нечисловые: 1) класс, названный в условии рядом со словом «вероятность»; 2) yes / true / да;
     3) более редкий класс (обычно это событие: дефолт, отток, мошенничество)."""
     names = {c: _label_text(c) for c in classes}
+    numeric = all(re.fullmatch(r"-?\d+(?:\.\d+)?", n) for n in names.values())
+    if numeric:
+        return max(classes, key=lambda c: float(names[c]))
     clean = (text or "").replace("*", "")
     for phrase in re.finditer(r"вероятност|probabilit", clean, flags=re.IGNORECASE):
         window = clean[phrase.end(): phrase.end() + 160]
@@ -186,6 +232,15 @@ def guess_positive_class(classes, y: pd.Series, text: str):
             return cls
     counts = y.value_counts()
     return min(classes, key=lambda c: counts.get(c, 0))
+
+
+def _simplex_grid(k: int, steps: int) -> list:
+    """Все веса k моделей с шагом 1/steps, сумма которых равна 1."""
+    def rec(left, parts):
+        if parts == 1:
+            return [[left]]
+        return [[i] + rest for i in range(left + 1) for rest in rec(left - i, parts - 1)]
+    return [np.array(w, dtype=float) / steps for w in rec(steps, k)]
 
 
 class SubmissionError(ValueError):
@@ -255,6 +310,7 @@ class Session:
         self.finished = None              # причина остановки от LLM
         self.history = []                 # короткий журнал вызовов
         self._counter = 0                 # номера запусков не повторяются даже после нового set_task
+        self._fits = {}                   # run_id -> обученные на всём train предсказания (для смесей)
 
     # ---- время ---------------------------------------------------------------
     def time_left(self) -> float:
@@ -263,6 +319,10 @@ class Session:
     def estimate_final_seconds(self, run_id) -> float:
         """Сколько займёт финальное обучение: время одной части валидации с запасом на весь train."""
         run = self.runs[run_id]
+        if run_id in self._fits:
+            return 0.0
+        if run["config"]["model"] == "blend":
+            return sum(self.estimate_final_seconds(m) for m in run["config"]["members"])
         result = run["result"]
         folds = max(1, len(result.get("fold_scores") or []))
         per_fold = result.get("seconds", 60.0) / folds / (run["config"]["subsample"] or 1.0)
@@ -274,7 +334,7 @@ class Session:
     # ---- обзор задачи -------------------------------------------------------
     def overview(self, max_columns: int = 60) -> dict:
         schema = self.profile["schema"]
-        extra = detect_extra_metric(self.data.text)
+        extra = self.suggested_extra_metric()
         return {
             "profile_text": ml_profile.format_profile(self.profile, max_columns=max_columns),
             "suggested": {
@@ -287,21 +347,33 @@ class Session:
             },
             "all_train_columns": [str(c) for c in self.data.train.columns] if self.data.train is not None else [],
             "extra_csv": [ml_io.display_path(p, self.task_dir) for p in self.data.files.extra_csv],
-            "available": {"models": list(MODELS), "metrics": ml_metrics.available_metrics() + list(EXTRA_METRICS),
+            "available": {"models": list(MODELS), "metrics": ml_metrics.available_metrics() + list(EXTRA_METRICS)
+                          + ["f1 (binary)", "precision (binary)", "recall (binary)"],
                           "task_types": list(TASK_TYPES), "validation": list(ml_validation.STRATEGIES),
                           "target_transforms": [t for t in ml_tools.TARGET_TRANSFORMS if t]},
             "time_left_s": round(self.time_left()),
         }
 
+    def suggested_extra_metric(self) -> Optional[str]:
+        """Своя метрика агента, если условие называет её основной (RMSLE, MAPE, бинарная F1)."""
+        core = self.profile["metric"].get("primary")
+        extra = detect_extra_metric(self.data.text, core)
+        if not extra and not core and re.search(r"\bf1\b", self.data.text or "", re.I):
+            extra = "f1"
+        return extra
+
     def sample_suggests_proba(self) -> bool:
-        """Похоже ли, что в ответе нужна вероятность: дробная заглушка в шаблоне или слова в условии."""
+        """Похоже ли, что ответ — вероятность, когда метрика неизвестна: дробная заглушка в шаблоне при
+        двух классах (или строковых метках), иначе слова в условии."""
         sample, train = self.data.sample_submission, self.data.train
         targets = self.profile["schema"]["target_cols"]
         if sample is not None and train is not None and len(targets) == 1 and targets[0] in sample.columns:
             placeholder, truth = sample[targets[0]], train[targets[0]]
-            if pd.api.types.is_float_dtype(placeholder) and truth.dropna().nunique() == 2:
-                if not pd.api.types.is_float_dtype(truth) or (placeholder.dropna() % 1 != 0).any():
-                    return True
+            if truth.dropna().nunique() == 2:
+                if not pd.api.types.is_float_dtype(placeholder):
+                    return False                     # целая или строковая заглушка — ждут метку
+                fractional = bool((placeholder.dropna() % 1 != 0).any())
+                return fractional or not pd.api.types.is_numeric_dtype(truth)
         return bool(_PROBA_WORDS.search(self.data.text or ""))
 
     # ---- инструменты ---------------------------------------------------------
@@ -337,8 +409,13 @@ class Session:
             return {"ok": False, "error": f"task_type должен быть одним из {TASK_TYPES}"}
         if not target_cols:
             return {"ok": False, "error": "укажите target_cols"}
+        binary_kind = _BINARY_METRICS.get(re.sub(r"[^a-z0-9]", "", str(metric).lower()))
+        if binary_kind and task_type != "binary":
+            return {"ok": False, "error": f"{metric} считается по положительному классу: нужна binary-задача "
+                                          "(для многоклассовой — f1_macro / f1_weighted)"}
         try:
-            resolved = resolve_metric(metric)
+            # бинарная F1/precision/recall: метрика создаётся ниже, когда известен положительный класс
+            resolved = _binary_metric(binary_kind, 1) if binary_kind else resolve_metric(metric)
         except ml_metrics.MetricError as error:
             return {"ok": False, "error": str(error)}
         family = "regression" if task_type == "regression" else "classification"
@@ -382,6 +459,10 @@ class Session:
                                                       f"{[_label_text(c) for c in classes]}"}
                 positive[target] = chosen if chosen is not None else guess_positive_class(classes, split.y_train,
                                                                                           self.data.text)
+            if binary_kind:
+                first = splits[schema.target_cols[0]]
+                classes = list(ml_data.LabelCodec().fit(first.y_train).classes_)
+                resolved = _binary_metric(binary_kind, classes.index(positive[schema.target_cols[0]]))
 
         # профиль для ml_tools с выбранными типом задачи и метрикой (иначе там останется эвристика);
         # своей метрики ml_tools по имени не знает — для его проверки семейства подставляем стандартную
@@ -404,7 +485,7 @@ class Session:
                       "metric": resolved.name, "metric_obj": resolved, "higher_is_better": resolved.higher_is_better,
                       "prediction_format": prediction_format, "positive": positive, "reason": reason}
         self.plan, self.plan_key = plan, _validation_key(plan)
-        self.runs = {}
+        self.runs, self._fits = {}, {}
         self.log(f"[set_task] target={list(schema.target_cols)} id={list(schema.id_cols)} {task_type} "
                  f"metric={resolved.name} features={len(schema.feature_cols)} validation={plan['strategy']}"
                  + (f" positive={ {t: _label_text(c) for t, c in positive.items()} }" if positive else ""))
@@ -430,7 +511,7 @@ class Session:
             return {"ok": False, "error": "сначала вызовите set_task"}
         if model not in MODELS:
             return {"ok": False, "error": f"model должна быть одной из {MODELS}"}
-        params, dropped = self._clean_params(params)
+        params, dropped = self._clean_params(params, model)
         if target_transform in ("none", "", "null"):
             target_transform = None
         if target_transform and self.setup["task_type"] != "regression":
@@ -477,7 +558,7 @@ class Session:
         self.log(f"[evaluate {run_id}] status={status} score={summary.get('score')} "
                  f"({summary['seconds']:.0f}s) best={best}")
         out = {"ok": status == "ok", "run_id": run_id, **summary, "best_run_id": best,
-               "best_score": self.runs[best]["result"]["score"] if best else None, "dropped_params": dropped,
+               "best_score": self._score(best) if best else None, "dropped_params": dropped,
                "comparable_runs": [r for r, v in self.runs.items() if v["key"] == self.plan_key
                                    and v["config"]["subsample"] is None]}
         if subsample is not None:
@@ -530,9 +611,11 @@ class Session:
             return first
         ok = all(p["status"] == "ok" for p in parts.values())
         scores = [p["score"] for p in parts.values()]
+        oof_scores = [p.get("oof_score") for p in parts.values()]
         return {"status": "ok" if ok else "error", "model": first["model"], "metric": first["metric"],
                 "higher_is_better": first["higher_is_better"],
                 "score": float(np.mean(scores)) if ok and None not in scores else None,
+                "oof_score": float(np.mean(oof_scores)) if ok and None not in oof_scores else None,
                 "fold_scores": first["fold_scores"], "seconds": float(sum(p["seconds"] for p in parts.values())),
                 "validation": first["validation"],
                 "error": "; ".join(f"{t}: {p['error']}" for t, p in parts.items() if p["error"]) or None,
@@ -557,7 +640,7 @@ class Session:
             pool = self._ok_runs()  # одни подвыборки — лучше, чем ничего
         best = None
         for run_id in pool:
-            if best is None or self._is_better(self.runs[run_id]["result"]["score"], self.runs[best]["result"]["score"]):
+            if best is None or self._is_better(self._score(run_id), self._score(best)):
                 best = run_id
         return best
 
@@ -577,7 +660,7 @@ class Session:
             return False
         if old["key"] != new["key"]:
             return not automatic
-        return self._is_better(new["result"]["score"], old["result"]["score"])
+        return self._is_better(self._score(run_id), self._score(written["run_id"]))
 
     # ---- внутреннее ----------------------------------------------------------
     def _plan_from(self, validation):
@@ -622,13 +705,22 @@ class Session:
             requested = default
         return max(min(30.0, left), min(requested, left))
 
-    def _clean_params(self, params):
+    def _clean_params(self, params, model="lightgbm"):
+        """Параметры LLM без тех, что задаёт код, и в словаре нужной библиотеки; (params, отброшенные)."""
         if not isinstance(params, dict):
             return {}, []
         clean, dropped = {}, []
         for key, value in params.items():
             if key in _RESERVED_PARAMS or not isinstance(value, (int, float, str, bool)):
                 dropped.append(key)
+            elif str(value).lower() == "dart":
+                dropped.append(key)  # dart отключает раннюю остановку и съедает весь бюджет
+            elif model == "catboost" and key in _CATBOOST_DROP:
+                dropped.append(key)
+            elif model == "catboost" and key in _CATBOOST_RENAME:
+                clean[_CATBOOST_RENAME[key]] = value
+            elif model == "catboost" and key in ("subsample", "bagging_fraction"):
+                clean.update(subsample=value, bootstrap_type="Bernoulli")
             else:
                 clean[key] = value
         return clean, dropped
@@ -645,17 +737,54 @@ class Session:
         fmt = setup["prediction_format"]
         if fmt != "auto":
             return fmt == "proba"
-        return setup["metric"] in PROBA_METRICS or self.sample_suggests_proba()
+        metric = setup.get("metric_obj")
+        if metric is None and setup.get("metric"):
+            try:
+                metric = resolve_metric(setup["metric"])
+            except ml_metrics.MetricError:
+                metric = None
+        if metric is not None:
+            return metric.needs == "proba"           # метрика по меткам (F1, accuracy) — пишем метки
+        return self.sample_suggests_proba()
 
-    def _finalize(self, run_id, class_weights="auto") -> dict:
+    # ---- финальное обучение и ансамбль --------------------------------------
+    def _oof(self, run_id, target):
+        """OOF-предсказания запуска: (позиции строк train, значения (n,) или вероятности (n, K))."""
+        run = self.runs[run_id]
+        if run["config"]["model"] == "blend":
+            return run["oof"][target]
+        ev = run["eval"][target]
+        return ev.oof_index, ev.oof_pred
+
+    def _fit_run(self, run_id) -> dict:
+        """Обучить запуск на всём train (с кэшем): таргет -> {pred, proba, classes, notes, truncated}."""
+        if run_id in self._fits:
+            return self._fits[run_id]
         run, setup = self.runs[run_id], self.setup
         config = run["config"]
-        predictions, notes, weights_info = {}, [], {}
+        if config["model"] == "blend":
+            members = {m: self._fit_run(m) for m in config["members"]}
+            fits = {}
+            for target in setup["splits"]:
+                weights = config["weights"][target]
+                parts = [members[m][target] for m in config["members"]]
+                if setup["task_type"] == "regression":
+                    pred = sum(w * np.asarray(p["pred"], dtype=float) for w, p in zip(weights, parts))
+                    fits[target] = {"pred": pred, "proba": None, "classes": None}
+                else:
+                    proba = sum(w * np.asarray(p["proba"], dtype=float) for w, p in zip(weights, parts))
+                    classes = parts[0]["classes"]
+                    fits[target] = {"pred": np.asarray(classes)[proba.argmax(axis=1)], "proba": proba, "classes": classes}
+                fits[target]["notes"] = []
+                fits[target]["truncated"] = any(p["truncated"] for p in parts)
+            self._fits[run_id] = fits
+            return fits
+        fits = {}
         for target, split in setup["splits"].items():
             ev = run["eval"][target]
             n_rounds = ml_tools.rounds_from(ev)
             budget = max(10.0, self.time_left() + self.final_slack)
-            self.log(f"[finalize {run_id}] {target}: {config['model']} n_rounds={n_rounds} budget={budget:.0f}s")
+            self.log(f"[fit {run_id}] {target}: {config['model']} n_rounds={n_rounds} budget={budget:.0f}s")
             out = ml_tools.fit_predict(
                 split, setup["profile"], model=config["model"], n_rounds=n_rounds, params=config["params"],
                 task_type=setup["task_type"], target_transform=config["target_transform"], n_jobs=self.n_jobs,
@@ -663,50 +792,144 @@ class Session:
                 learning_rate=config["learning_rate"],
             )
             if out.get("status") != "ok":
-                return {"ok": False, "error": f"финальное обучение {target} не удалось: {_short(out.get('error'))}"}
-            notes += list(out.get("notes", []))
-            if n_rounds and out.get("n_rounds") and out["n_rounds"] < 0.8 * n_rounds:
+                raise RuntimeError(f"финальное обучение {run_id}/{target} не удалось: {_short(out.get('error'))}")
+            truncated = bool(n_rounds and out.get("n_rounds") and out["n_rounds"] < 0.8 * n_rounds)
+            notes = list(out.get("notes", []))
+            if truncated:
                 notes.append(f"{target}: обучение урезано по времени: {out['n_rounds']} из {n_rounds} раундов")
-                if (self.written or {}).get("run_id"):
-                    return {"ok": False, "error": "финальное обучение урезано по времени; прежний ответ сохранён",
-                            "notes": notes}
-            pred = out["pred"]
+            fits[target] = {"pred": out["pred"], "proba": out.get("proba"), "classes": out.get("classes"),
+                            "notes": notes, "truncated": truncated}
+        self._fits[run_id] = fits
+        return fits
+
+    def _finalize(self, run_id, class_weights="auto") -> dict:
+        run, setup = self.runs[run_id], self.setup
+        try:
+            fits = self._fit_run(run_id)
+        except RuntimeError as error:
+            return {"ok": False, "error": str(error)}
+        notes = [n for f in fits.values() for n in f["notes"]]
+        if any(f["truncated"] for f in fits.values()) and (self.written or {}).get("run_id"):
+            return {"ok": False, "error": "финальное обучение урезано по времени; прежний ответ сохранён", "notes": notes}
+        predictions, weights_info = {}, {}
+        for target, split in setup["splits"].items():
+            fit = fits[target]
+            pred = fit["pred"]
             if setup["task_type"] != "regression":
-                pred, weights_info[target] = self._class_weights(run, target, out, class_weights)
+                pred, weights_info[target] = self._class_weights(run_id, target, fit, class_weights)
             elif split.y_train.min() >= 0:
                 pred = np.clip(pred, 0, None)  # неотрицательный таргет: отрицательный прогноз только вредит
-            predictions[target] = (pred, out.get("proba"), out.get("classes"))
+            predictions[target] = (pred, fit["proba"], fit["classes"])
         frame, frame_notes = self._assemble(setup, predictions)
         path = write_submission(frame, self.task_dir, len(setup["split"].X_test), setup["schema"].id_cols)
-        self.written = {"run_id": run_id, "score": run["result"]["score"], "model": config["model"]}
-        self.log(f"[finalize {run_id}] записан {path} ({len(frame)} строк), cv={run['result']['score']}")
+        self.written = {"run_id": run_id, "score": self._score(run_id), "model": run["config"]["model"]}
+        self.log(f"[finalize {run_id}] записан {path} ({len(frame)} строк), cv={self._score(run_id)}")
         return {"ok": True, "path": str(path), "rows": len(frame), "columns": list(frame.columns),
-                "run_id": run_id, "cv_score": run["result"]["score"],
+                "run_id": run_id, "cv_score": self._score(run_id),
                 "class_weights": {t: w for t, w in weights_info.items() if w} or None,
                 "notes": notes + frame_notes}
 
-    def _class_weights(self, run, target, out, mode):
+    def _class_weights(self, run_id, target, fit, mode):
         """Веса классов под Macro F1 по OOF-вероятностям; применяются, только если честно помогают."""
-        setup, ev = self.setup, run["eval"][target]
+        setup, run = self.setup, self.runs[run_id]
         split = setup["splits"][target]
-        labels = out["pred"]
-        if mode == "off" or setup["metric"] != "f1_macro" or run["config"]["subsample"]:
+        labels = fit["pred"]
+        if mode == "off" or setup["metric"] != "f1_macro" or run["config"]["subsample"] or fit["proba"] is None:
             return labels, None
-        if ev.oof_pred is None or ev.oof_index is None or len(ev.oof_index) < 200:
+        index, oof = self._oof(run_id, target)
+        if oof is None or index is None or len(index) < 200:
             return labels, None
         try:
             codec = ml_data.LabelCodec().fit(split.y_train)
-            truth = codec.encode(split.y_train.iloc[ev.oof_index])
-            groups = ml_validation.row_groups(split.X_train.iloc[ev.oof_index])
-            choice = ml_postprocess.choose_class_weights(ev.oof_pred, truth, groups=groups)
+            truth = codec.encode(split.y_train.iloc[index])
+            groups = ml_validation.row_groups(split.X_train.iloc[index])
+            choice = ml_postprocess.choose_class_weights(oof, truth, groups=groups)
             info = {"applied": bool(choice["applied"]), "holdout_gain": choice["holdout_gain"]}
             if choice["applied"]:
-                labels = codec.decode(ml_postprocess.apply_class_weights(out["proba"], choice["weights"]))
+                labels = codec.decode(ml_postprocess.apply_class_weights(fit["proba"], choice["weights"]))
                 info["weights"] = dict(zip([str(c) for c in codec.classes_], choice["weights"]))
             self.log(f"[class_weights] {target}: {info}")
             return labels, info
         except Exception as error:
             return labels, {"applied": False, "error": _short(error, 200)}
+
+    def _oof_metric(self, target, index, pred) -> float:
+        """Метрика задачи на OOF-предсказаниях (как oof_score в ml_tools)."""
+        split, metric = self.setup["splits"][target], self.setup["metric_obj"]
+        y = split.y_train.iloc[index]
+        if self.setup["task_type"] == "regression":
+            return metric(y.to_numpy(dtype=float), pred)
+        codec = ml_data.LabelCodec().fit(split.y_train)
+        codes = codec.encode(y)
+        if metric.needs == "labels":
+            return metric(codes, np.asarray(pred).argmax(axis=1))
+        return metric(codes, pred, labels=list(range(len(codec.classes_))))
+
+    def tool_blend(self, run_ids=None, reason=""):
+        """Смесь нескольких запусков: веса по OOF-предсказаниям на общей схеме валидации."""
+        if self.setup is None:
+            return {"ok": False, "error": "сначала вызовите set_task"}
+        pool = [r for r in self._ok_runs(full_only=True) if self.runs[r]["key"] == self.plan_key
+                and self.runs[r]["config"]["model"] != "blend"]
+        if run_ids:
+            missing = [r for r in run_ids if r not in pool]
+            if missing:
+                return {"ok": False, "error": f"{missing} не годятся: нужны успешные полные запуски текущей схемы {pool}"}
+            members = list(dict.fromkeys(run_ids))
+        else:
+            members = sorted(pool, key=lambda r: self._score(r), reverse=self.setup["higher_is_better"])[:4]
+        if len(members) < 2:
+            return {"ok": False, "error": f"для смеси нужно хотя бы два успешных полных запуска; есть {pool}"}
+        grid = _simplex_grid(len(members), 10 if len(members) <= 4 else 5)
+        weights, oof, per_target, gain = {}, {}, {}, []
+        for target in self.setup["splits"]:
+            parts = [self._oof(m, target) for m in members]
+            common = parts[0][0]
+            for index, _ in parts[1:]:
+                common = np.intersect1d(common, index)
+            if len(common) < 20:
+                return {"ok": False, "error": "у запусков слишком мало общих OOF-строк"}
+            aligned = []
+            for index, pred in parts:
+                order = pd.Series(np.arange(len(index)), index=index).loc[common].to_numpy()
+                aligned.append(np.asarray(pred, dtype=float)[order])
+            singles = [self._oof_metric(target, common, p) for p in aligned]
+            best_w, best_s = None, None
+            for w in grid:
+                score = self._oof_metric(target, common, sum(wi * p for wi, p in zip(w, aligned)))
+                if best_s is None or self._is_better(score, best_s):
+                    best_w, best_s = w, score
+            best_single = singles[0]
+            for value in singles[1:]:
+                if self._is_better(value, best_single):
+                    best_single = value
+            weights[target] = [float(w) for w in best_w]
+            oof[target] = (common, sum(wi * p for wi, p in zip(best_w, aligned)))
+            per_target[target] = {"blend": best_s, "best_single": best_single,
+                                  "weights": dict(zip(members, [round(float(w), 2) for w in best_w]))}
+            gain.append(best_s - best_single)
+        blended = float(np.mean([v["blend"] for v in per_target.values()]))
+        single = float(np.mean([v["best_single"] for v in per_target.values()]))
+        if not self._is_better(blended, single):
+            return {"ok": False, "error": "смесь не лучше лучшего одиночного запуска на OOF", "per_target": per_target}
+        self._counter += 1
+        run_id = f"b{self._counter}"
+        seconds = float(sum(self.runs[m]["result"].get("seconds", 0) for m in members))
+        self.runs[run_id] = {
+            "config": {"model": "blend", "members": members, "weights": weights, "subsample": None, "params": {},
+                       "learning_rate": None, "target_transform": None, "max_rounds": 0},
+            "result": {"status": "ok", "score": blended, "oof_score": blended, "fold_scores": [], "seconds": seconds,
+                       "metric": self.setup["metric"], "model": "blend"},
+            "eval": None, "oof": oof, "key": self.plan_key, "hypothesis": reason}
+        self.log(f"[blend {run_id}] {members} -> {blended} (лучший одиночный {single})")
+        return {"ok": True, "run_id": run_id, "members": members, "oof_score": blended, "best_single_oof": single,
+                "per_target": per_target, "best_run_id": self.best_run(),
+                "note": "обучить и записать смесь: finalize(run_id)"}
+
+    def _score(self, run_id):
+        """Оценка для сравнения запусков: метрика по всем OOF-строкам сразу, иначе среднее по частям."""
+        result = self.runs[run_id]["result"]
+        return result.get("oof_score") if result.get("oof_score") is not None else result.get("score")
 
     def _assemble(self, setup, predictions: dict):
         """Собрать ответ в порядке test по столбцам шаблона. predictions: таргет -> (метки/значения, proba, classes).
@@ -733,13 +956,22 @@ class Session:
                     notes.append(f"столбцы {candidates} сопоставлены классам {list(map(str, classes))} по порядку")
         wants_proba = classification and setup["task_type"] == "binary" and self._wants_proba(setup)
 
+        alias = {}
+        if len(predictions) == 1 and main not in columns:
+            # столбец ответа назван иначе, чем таргет (prediction, target, ...): прогноз пишем в него
+            unknown = [c for c in columns if c not in ids.columns and not (class_map and c in class_map)
+                       and c not in test.columns and (train is None or c not in train.columns)]
+            if len(unknown) == 1:
+                alias[unknown[0]] = main
+                notes.append(f"{unknown[0]}: прогноз таргета {main!r} (столбец ответа назван иначе)")
         for col in columns:
+            source = alias.get(col, col)
             if col in ids.columns:
                 frame[col] = ids[col].to_numpy()
-            elif col in predictions:
-                pred, proba, classes = predictions[col]
+            elif source in predictions:
+                pred, proba, classes = predictions[source]
                 if wants_proba and proba is not None and len(classes) == 2:
-                    positive = setup["positive"].get(col, classes[1])
+                    positive = setup["positive"].get(source, classes[1])
                     frame[col] = np.asarray(proba)[:, list(classes).index(positive)]
                     notes.append(f"{col}: вероятность класса {_label_text(positive)!r}")
                 elif classification:
@@ -797,7 +1029,7 @@ class Session:
                     if len(classes) == 2:
                         positive[target] = guess_positive_class(classes, y, self.data.text)
             setup = {"schema": schema, "split": split, "task_type": task_type, "positive": positive,
-                     "metric": detect_extra_metric(self.data.text) or self.profile["metric"].get("primary") or "",
+                     "metric": self.suggested_extra_metric() or self.profile["metric"].get("primary") or "",
                      "prediction_format": "auto"}
             frame, notes = self._assemble(setup, predictions)
             write_submission(frame, self.task_dir, len(split.X_test), schema.id_cols)
@@ -874,6 +1106,20 @@ TOOL_SPECS = [
                 "run_id": {"type": "string"},
                 "class_weights": {"type": "string", "enum": ["auto", "off"],
                                   "description": "Подбор весов классов под Macro F1 по OOF"},
+                "reason": {"type": "string"},
+            },
+        },
+    },
+    {
+        "name": "blend",
+        "description": "Смешать предсказания нескольких успешных полных запусков текущей схемы (разные модели "
+                       "ошибаются по-разному). Веса подбираются по OOF; смесь создаётся, только если она лучше лучшего "
+                       "одиночного запуска. Затем finalize(run_id смеси).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "run_ids": {"type": "array", "items": {"type": "string"},
+                            "description": "Запуски для смеси; по умолчанию — до 4 лучших"},
                 "reason": {"type": "string"},
             },
         },

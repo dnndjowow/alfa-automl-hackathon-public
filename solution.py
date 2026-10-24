@@ -47,10 +47,14 @@ def fallback_policy(session) -> None:
         if not targets:
             log("[fallback] таргет не найден")
             return
-        if task_type not in ("regression", "binary", "multiclass"):
+        if len(targets) > 1 or task_type not in ("regression", "binary", "multiclass"):
             import ml_schema
-            # несколько таргетов: тип по первому, учатся все по очереди
-            task_type = ml_schema.suggest_task_type(session.data.train[targets[0]], session.data.text)["type"]
+            # несколько таргетов: тип по первому; учатся таргеты того же типа, остальные получат константу
+            # текст условия общий и не говорит, к какому таргету относится: для остальных — только данные
+            kinds = {t: ml_schema.suggest_task_type(session.data.train[t], session.data.text if i == 0 else "")["type"]
+                     for i, t in enumerate(targets)}
+            task_type = kinds[targets[0]]
+            targets = [t for t in targets if kinds[t] == task_type]
         if task_type not in ("regression", "binary", "multiclass"):
             log(f"[fallback] тип задачи {task_type!r} не поддержан")
             return
@@ -67,12 +71,42 @@ def fallback_policy(session) -> None:
         if not result.get("ok"):
             log(f"[fallback] set_task: {result.get('error')}")
             return
-    if not session._ok_runs(full_only=True):
-        log_metric = session.setup["metric"] in ("rmsle", "msle")
-        result = session.call("evaluate", {"model": "lightgbm", "hypothesis": "fallback: базовая модель",
-                                           "target_transform": "log1p" if log_metric else None})
+    improve(session)
+
+
+def improve(session) -> None:
+    """Без LLM: база, затем несколько проверенных на табличных задачах шагов и смесь — пока хватает времени."""
+    setup = session.setup
+    regression = setup["task_type"] == "regression"
+    log_metric = setup["metric"] in ("rmsle", "msle")
+    y = next(iter(setup["splits"].values())).y_train
+    nonneg_skewed = regression and float(y.min()) >= 0 and abs(float(y.skew())) > 0.75
+    transform = "log1p" if log_metric else None
+    steps = [{"model": "lightgbm", "target_transform": transform, "hypothesis": "fallback: база"}]
+    if nonneg_skewed and not log_metric:
+        steps.append({"model": "lightgbm", "target_transform": "log1p", "hypothesis": "fallback: скошенный таргет"})
+    steps += [{"model": "catboost", "hypothesis": "fallback: вторая модель"},
+              {"model": "xgboost", "hypothesis": "fallback: третья модель"}]
+    last = 0.0
+    for step in steps:
+        if step["model"] != "lightgbm" or step is not steps[0]:
+            best = session.best_run()
+            if best and step.get("target_transform") is None and regression:
+                step["target_transform"] = session.runs[best]["config"]["target_transform"]
+            reserve = (session.estimate_final_seconds(best) if best else 60.0) * 4 + 120
+            if session.time_left() < reserve + 2 * last:
+                log("[fallback] времени на следующие шаги нет")
+                break
+        if session._ok_runs(full_only=True) and step is steps[0]:
+            continue  # база уже есть (её сделала LLM)
+        started = time.monotonic()
+        result = session.call("evaluate", step)
+        last = time.monotonic() - started
         if not result.get("ok"):
-            log(f"[fallback] evaluate: {result.get('error')}")
+            log(f"[fallback] evaluate {step['model']}: {result.get('error')}")
+    if len(session._ok_runs(full_only=True)) >= 2:
+        result = session.call("blend", {"reason": "fallback"})
+        log(f"[fallback] blend: ok={result.get('ok')} {result.get('error', '')}")
 
 
 def metric_family(metric):

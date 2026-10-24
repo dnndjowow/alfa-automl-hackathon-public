@@ -192,6 +192,175 @@ class GeneralizationTest(unittest.TestCase):
         self.assertEqual(agent_tools.detect_extra_metric("Метрика — **RMSLE**"), "rmsle")
 
 
+class BlendTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def test_blend_uses_oof_weights_and_reuses_fitted_members(self):
+        for kind, metric in (("regression", "rmse"), ("multiclass", "f1_macro")):
+            task = make_task(self.tmp / kind, kind=kind, n_train=600, target="t")
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["t"], "id_cols": ["id"], "task_type": kind, "metric": metric})
+            session.call("evaluate", {"model": "lightgbm", **FAST})
+            session.call("evaluate", {"model": "catboost", "learning_rate": 0.2, "max_rounds": 120})
+            out = session.call("blend", {})
+            if not out["ok"]:
+                self.assertIn("не лучше", out["error"])   # смесь не создаётся, если не помогает
+                continue
+            self.assertTrue(session._is_better(out["oof_score"], out["best_single_oof"]))
+            fin = session.call("finalize", {"run_id": out["run_id"]})
+            self.assertTrue(fin["ok"], fin)
+            self.assertEqual(session.written["run_id"], out["run_id"])
+            sub = pd.read_csv(task.task_md.parent / "submission.csv")
+            self.assertEqual(len(sub), len(task.truth))
+
+    def test_blend_needs_two_runs_and_simplex_grid(self):
+        self.assertEqual(len(agent_tools._simplex_grid(2, 10)), 11)
+        self.assertTrue(all(abs(w.sum() - 1) < 1e-9 for w in agent_tools._simplex_grid(3, 5)))
+        task = make_task(self.tmp, kind="regression", n_train=300)
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+        session.call("evaluate", {"model": "lightgbm", **FAST})
+        self.assertFalse(session.call("blend", {})["ok"])
+
+    def test_log_rmse_phrase_is_rmsle(self):
+        self.assertEqual(agent_tools.detect_extra_metric("Качество — **RMSE между логарифмами** цены"), "rmsle")
+        self.assertIsNone(agent_tools.detect_extra_metric("Метрика — RMSE, меньше — лучше"))
+
+
+class CoreReviewWorkaroundTest(unittest.TestCase):
+    """Обходы дефектов ML-ядра из docs/REVIEW_FINDINGS.md на стороне агента."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def test_round_aliases_and_catboost_params_do_not_break_final_fit(self):
+        _, session = session_for(self.tmp, kind="regression", n_train=400)
+        session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+        res = session.call("evaluate", {"model": "lightgbm", "params": {"early_stopping": 20, "num_trees": 40}, **FAST})
+        self.assertTrue(res["ok"] and {"early_stopping", "num_trees"} <= set(res["dropped_params"]), res)
+        self.assertEqual(session.written["run_id"], res["run_id"])     # финальное обучение прошло
+        cat = session.call("evaluate", {"model": "catboost", "learning_rate": 0.2, "max_rounds": 80,
+                                        "params": {"max_depth": 4, "subsample": 0.8, "colsample_bytree": 0.8,
+                                                   "min_child_weight": 3}})
+        self.assertTrue(cat["ok"], cat)
+        self.assertEqual(cat["params"], {"depth": 4, "subsample": 0.8, "bootstrap_type": "Bernoulli", "rsm": 0.8})
+
+    def test_binary_f1_of_positive_class(self):
+        task, session = session_for(self.tmp, kind="binary", n_train=500, target="t")
+        out = session.call("set_task", {"target_cols": ["t"], "id_cols": ["id"], "task_type": "binary",
+                                        "metric": "F1-score", "positive_class": "beta"})
+        self.assertTrue(out["ok"], out)
+        self.assertEqual(out["metric"], "f1")
+        res = session.call("evaluate", {"model": "lightgbm", **FAST})
+        self.assertTrue(res["ok"], res)
+        self.assertFalse(session.call("set_task", {"target_cols": ["t"], "task_type": "multiclass", "metric": "f1"})["ok"])
+
+
+class SecondReviewTest(unittest.TestCase):
+    """Находки второго ревью агента (docs/REVIEW_FINDINGS.md, раздел «Агент Ивана»)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def test_numeric_positive_class_ignores_probability_range_text(self):
+        y = pd.Series([0] * 80 + [1] * 20)
+        for text in ("Нужна вероятность от 0 до 1 того, что клиент уйдёт (t = 1)",
+                     "Predict the probability (between 0 and 1) that t is 1", "вероятность в диапазоне [0, 1]"):
+            self.assertEqual(agent_tools.guess_positive_class([0, 1], y, text), 1)
+
+    def test_label_metric_writes_labels_even_if_text_mentions_probability(self):
+        task = make_task(self.tmp, kind="binary", n_train=400, target="t")
+        text = task.task_md.read_text(encoding="utf-8") + "\nМетрика — Macro F1. В ответе метка класса (не вероятность!).\n"
+        task.task_md.write_text(text, encoding="utf-8")
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        out = session.call("set_task", {"target_cols": ["t"], "id_cols": ["id"], "task_type": "binary", "metric": "f1_macro"})
+        self.assertFalse(out["answer_as_probability"])
+        session.call("evaluate", {"model": "lightgbm", **FAST})
+        sub = pd.read_csv(task.task_md.parent / "submission.csv")
+        self.assertTrue(set(sub["t"]) <= {"alpha", "beta"})
+
+    def test_prediction_goes_to_renamed_output_column(self):
+        task = make_task(self.tmp, kind="regression", n_train=400)
+        folder = task.task_md.parent / "data" / "participants"
+        pd.DataFrame({"id": task.truth["id"], "prediction": 0.0}).to_csv(folder / "sample_submission.csv", index=False)
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        out = session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+        self.assertTrue(out["ok"], out)
+        session.call("evaluate", {"model": "lightgbm", **FAST})
+        sub = pd.read_csv(task.task_md.parent / "submission.csv")
+        self.assertEqual(list(sub.columns), ["id", "prediction"])
+        self.assertGreater(sub["prediction"].nunique(), 10)
+
+    def test_fallback_does_not_regress_a_binary_second_target(self):
+        import solution
+        task = make_task(self.tmp, kind="regression", n_train=400)
+        folder = task.task_md.parent / "data" / "participants"
+        train = pd.read_csv(folder / "train.csv")
+        train["flag2"] = (train["y"] > 0).astype(int)
+        train.to_csv(folder / "train.csv", index=False)
+        sample = pd.read_csv(folder / "sample_submission.csv")
+        sample["flag2"] = 0
+        sample.to_csv(folder / "sample_submission.csv", index=False)
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        solution.fallback_policy(session)
+        sub = pd.read_csv(task.task_md.parent / "submission.csv")
+        self.assertTrue(set(sub["flag2"]) <= {0, 1})
+        self.assertGreater(sub["y"].nunique(), 10)
+
+    def test_extra_metric_needs_to_be_the_named_one(self):
+        detect = agent_tools.detect_extra_metric
+        self.assertIsNone(detect("Метрика — RMSE (log-преобразование таргета разрешено).", "rmse"))
+        self.assertIsNone(detect("Evaluation metric: RMSE, log files are in logs/.", "rmse"))
+        self.assertIsNone(detect("Основная метрика — RMSE. Для информации также показывается MAPE.", "rmse"))
+        self.assertEqual(detect("Основная метрика — **MAPE**; RMSE показывается для справки.", "rmse"), "mape")
+        self.assertEqual(detect("Качество — **RMSE между логарифмами** цены", "rmse"), "rmsle")
+
+    def test_compaction_keeps_a_single_summary(self):
+        _, session = session_for(self.tmp, kind="regression")
+        messages = agent_llm.initial_messages(session)
+        base = messages[1]
+        for step in range(30):
+            messages = agent_llm.compact(messages, session, keep=6, base_first=base)
+            messages += [{"role": "assistant", "content": f"шаг {step}"}, {"role": "user", "content": "ok"}]
+        self.assertEqual(messages[1]["content"].count("Что уже сделано"), 1)
+
+    def test_client_keeps_tools_after_transient_error_and_bounds_timeout(self):
+        class Flaky:
+            def __init__(self):
+                self.calls = []
+
+            def create(self, **kwargs):
+                self.calls.append(("tools" in kwargs, kwargs["timeout"]))
+                if len(self.calls) == 1:
+                    error = RuntimeError("Service Unavailable")
+                    error.status_code = 503
+                    raise error
+                message = type("M", (), {"content": "ok", "tool_calls": None})
+                return type("R", (), {"usage": None, "choices": [type("C", (), {"message": message})]})
+        chat = agent_llm.OpenAIChat.__new__(agent_llm.OpenAIChat)
+        flaky = Flaky()
+        chat.client = type("Client", (), {"chat": type("Chat", (), {"completions": flaky})})
+        chat.model, chat.retries, chat.timeout, chat.tools_supported = "m", 3, 240.0, True
+        chat.usage = {"prompt_tokens": 0, "completion_tokens": 0, "requests": 0}
+        chat.time_left = lambda: 200.0
+        original = agent_llm.time.sleep
+        agent_llm.time.sleep = lambda s: None
+        try:
+            chat([{"role": "user", "content": "x"}], [])
+        finally:
+            agent_llm.time.sleep = original
+        self.assertTrue(chat.tools_supported)
+        self.assertEqual([c[0] for c in flaky.calls], [True, True])
+        self.assertLessEqual(flaky.calls[0][1], 140.0)
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 
