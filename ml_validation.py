@@ -34,8 +34,11 @@ class Splits(list):
 
 
 def row_groups(X: pd.DataFrame) -> np.ndarray:
-    """Одинаковые по признакам строки получают один и тот же номер группы."""
-    return pd.util.hash_pandas_object(X, index=False).to_numpy()
+    """Одинаковые по признакам строки получают один и тот же номер группы.
+
+    Номера идут по первому появлению строки, а не по значению хэша: от номеров зависит, в какой фолд
+    попадёт группа, и при добавлении признаков (группы те же) фолды не должны меняться."""
+    return pd.factorize(pd.util.hash_pandas_object(X, index=False))[0]
 
 
 def suggest_validation(profile: dict, X_train: pd.DataFrame = None, n_splits: int = 5,

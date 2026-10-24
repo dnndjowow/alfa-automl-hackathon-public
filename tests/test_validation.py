@@ -168,6 +168,21 @@ class SplitsTest(unittest.TestCase):
             self.assertEqual(len(set(keys.iloc[train]) & set(keys.iloc[valid])), 0)
         self.assertLess(elapsed, 5.0)  # на M2 ~1 с, на i5-11400F ~2.1 с; прежняя версия была в 8 раз медленнее
 
+    def test_group_folds_do_not_change_when_features_are_added(self):
+        # ревью Ивана (25.10, row_groups): номер группы был хэшем строки, и после добавления признаков
+        # фолды перемешивались, хотя группы прежние; сравнение наборов признаков шло на разных фолдах
+        rng = np.random.default_rng(0)
+        base = pd.DataFrame({"a": rng.normal(size=1700).round(3), "b": rng.integers(0, 5, 1700)})
+        X = pd.concat([base, base.iloc[:300]], ignore_index=True)  # 15% полных копий
+        wider = X.assign(c=X["a"] * 2, d=X["b"] + 1, e=X["a"].abs())  # те же группы, новые столбцы
+        y_reg, y_cls = rng.normal(size=len(X)), rng.integers(0, 2, len(X))
+        for y, classification in ((y_reg, False), (y_cls, True)):
+            plan = {"strategy": "group", "n_splits": 5, "classification": classification}
+            before = mv.make_splits(plan, X, y)
+            after = mv.make_splits(plan, wider, y)
+            for (_, v1), (_, v2) in zip(before, after):
+                self.assertEqual(sorted(v1), sorted(v2))
+
     def test_kfold_is_deterministic_for_a_seed(self):
         X = pd.DataFrame({"x": range(50)})
         a = mv.make_splits({"strategy": "kfold", "n_splits": 4}, X, seed=1)
