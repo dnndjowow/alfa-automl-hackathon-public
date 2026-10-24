@@ -182,11 +182,13 @@ class MetricMentionTest(unittest.TestCase):
             "Основная метрика: macro-averaged F1. Accuracy тоже считаем.": "f1_macro",
             "Метрика — F1-score (macro). Также смотрим accuracy.": "f1_macro",
             "Основная метрика — F1-мера (macro).": "f1_macro",
+            "Основная метрика — оценка по F1-мере (macro).": "f1_macro",  # ревью Ивана (25.10, №4): падеж
             "Основная метрика — PR-AUC (average precision).": "average_precision",
             "Метрика — R^2.": "r2",
         }
         for text, expected in cases.items():
             self.assertEqual(ms.mentioned_metrics(text)["primary"], expected, text)
+        self.assertEqual(ms.mentioned_metrics("Основная метрика — по F1-мере.")["primary"], "f1")
         plain = ms.mentioned_metrics("Основная метрика: F1-score.")
         self.assertEqual((plain["primary"], plain["supported"], plain["higher_is_better"]), ("f1", False, True))
         self.assertEqual(ms.metric_family("f1"), "classification")
