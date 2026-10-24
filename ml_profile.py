@@ -66,6 +66,8 @@ def profile_column(series: pd.Series) -> dict:
         info.update(
             min=_round(series.min()), max=_round(series.max()), mean=_round(series.mean()),
             std=_round(series.std()), median=_round(series.median()),
+            # целые значения при float-типе: так читается столбец целых чисел с пропусками
+            integer_valued=bool((series.dropna() % 1 == 0).all()),
         )
     elif kind in ("categorical", "binary"):
         top = series.value_counts(dropna=True).head(5)

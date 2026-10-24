@@ -28,6 +28,10 @@ class ColumnProfileTest(unittest.TestCase):
         cat = mp.profile_column(pd.Series(["a", "a", "b", "c"], name="c"))
         self.assertEqual(cat["top_values"][0], ["a", 0.5])
 
+    def test_integer_valued_flag(self):
+        self.assertTrue(mp.profile_column(pd.Series([1.0, 2.0, None, 4.0], name="y"))["integer_valued"])
+        self.assertFalse(mp.profile_column(pd.Series([1.5, 2.0, 3.0], name="z"))["integer_valued"])
+
     def test_id_like(self):
         ids = mp.profile_column(pd.Series(range(200), name="row"))
         self.assertTrue(ids.get("id_like"))

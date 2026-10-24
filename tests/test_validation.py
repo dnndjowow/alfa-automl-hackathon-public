@@ -43,6 +43,15 @@ class SuggestTest(unittest.TestCase):
         plan = mv.suggest_validation(profile_with("regression", {"yr": 1.0}, columns, {"yr": "both"}))
         self.assertEqual(plan["strategy"], "kfold")
 
+    def test_integer_year_with_missing_values_still_triggers_temporal(self):
+        # ревью Ивана (Y5): из-за одного пропуска год читается как float64, и схема была kfold
+        columns = [{"name": "year", "dtype": "float64", "n_unique": 4, "integer_valued": True}]
+        plan = mv.suggest_validation(profile_with("regression", {"year": 1.0}, columns, {"year": "above"}))
+        self.assertEqual((plan["strategy"], plan["column"]), ("temporal", "year"))
+        X = pd.DataFrame({"year": [np.nan] * 3 + [1.0] * 10 + [2.0] * 10 + [3.0] * 10 + [4.0] * 10})
+        splits = mv.make_splits(plan, X)
+        self.assertEqual([float(X.year.iloc[v[0]]) for _, v in splits], [2.0, 3.0, 4.0])
+
     def test_float_or_high_cardinality_columns_do_not_trigger_temporal(self):
         columns = [{"name": "t", "dtype": "float64", "n_unique": 5},
                    {"name": "u", "dtype": "int64", "n_unique": 5000}]

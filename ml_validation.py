@@ -49,7 +49,7 @@ def suggest_validation(profile: dict, X_train: pd.DataFrame = None, n_splits: in
         side = sides.get(name, "above")
         if (
             share >= 0.9 and info is not None and side in ("above", "below")
-            and info["dtype"].startswith(("int", "uint"))
+            and (info["dtype"].startswith(("int", "uint")) or info.get("integer_valued"))
             and 3 <= info["n_unique"] <= 50
         ):
             direction = "forward" if side == "above" else "backward"
