@@ -19,6 +19,8 @@ import time
 from pathlib import Path
 
 START = time.monotonic()
+# модули решения лежат рядом с solution.py: импорт не должен зависеть от способа запуска
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def log(message: str) -> None:
