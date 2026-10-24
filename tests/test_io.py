@@ -82,6 +82,36 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         self.assertIsNone(ml_io.classify_csv("submission.csv"))
         self.assertIsNone(ml_io.classify_csv("weather.csv"))
 
+    def test_more_file_name_variants(self):
+        # ревью Ивана (Y8): training/testing/trainset, submission_example/template не распознавались
+        cases = {"training.csv": "train", "testing.csv": "test", "trainset.csv": "train", "testset.csv": "test",
+                 "submission_example.csv": "sample_submission", "example_submission.csv": "sample_submission",
+                 "submission_template.csv": "sample_submission", "train_labels.csv": "train_labels",
+                 "y_train.csv": "train_labels", "X_train.csv": "train", "test_labels.csv": None}
+        for name, role in cases.items():
+            self.assertEqual(ml_io.classify_csv(name), role, name)
+
+    def test_features_and_labels_in_separate_files(self):
+        # ревью Ивана (Y8): train_labels.csv отбрасывался, таргет терялся
+        by_id = self.write_task({"train_features.csv": "id,x\n1,0.5\n2,1.5\n3,2.5\n",
+                                 "train_labels.csv": "id,y\n3,30\n1,10\n2,20\n",
+                                 "test_features.csv": "id,x\n4,3.5\n"}, "`train_features.csv` `test_features.csv`")
+        data = ml_io.load_task(by_id / "task.md")
+        self.assertEqual(data.train["y"].tolist(), [10, 20, 30])
+        self.assertEqual(data.files.paths["test"].name, "test_features.csv")
+        by_order = self.write_task({"X_train.csv": "a,b\n1,2\n3,4\n", "y_train.csv": "target\n0\n1\n",
+                                    "X_test.csv": "a,b\n5,6\n"}, "")
+        data = ml_io.load_task(by_order / "task.md")
+        self.assertEqual(list(data.train.columns), ["a", "b", "target"])
+        self.assertTrue(any("по порядку" in w for w in data.files.warnings))
+
+    def test_unselected_candidates_are_kept_in_extra(self):
+        root = self.write_task({"train.csv": "id,x,y\n1,2,3\n", "training.csv": "id,x,y\n1,2,3\n",
+                                "test.csv": "id,x\n2,3\n"}, "")
+        files = ml_io.find_task_files(root / "task.md")
+        self.assertEqual(files.paths["train"].name, "train.csv")
+        self.assertEqual([p.name for p in files.extra_csv], ["training.csv"])
+
     def test_substrings_do_not_assign_roles(self):
         # ревью: 'dict' внутри 'predictions', 'sample'+'sub' внутри 'subsample'
         for name in ("predictions.csv", "oof_predictions.csv", "train_predictions.csv", "test_preds.csv"):
