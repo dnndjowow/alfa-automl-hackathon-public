@@ -73,8 +73,9 @@ class EveryModelTest(unittest.TestCase):
                 m = model(name, "classification", n_classes=4).fit(X[keep], y[keep])
                 proba = m.predict(X)
                 self.assertEqual(proba.shape, (400, 4))
-                self.assertTrue((proba[:, 2] == 0).all())
+                self.assertTrue((proba[:, 2] > 0).all() and (proba[:, 2] <= 1e-4).all())
                 np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-5)
+                self.assertFalse((proba.argmax(axis=1) == 2).any())
 
     def test_unseen_and_missing_values_in_predict(self):
         X, y = make_data("regression")
@@ -173,6 +174,74 @@ class BehaviourTest(unittest.TestCase):
         self.assertEqual(m.predict(X).shape, (400, 3))
         self.assertEqual(m.params, {"depth": 4, "rsm": 0.8, "auto_class_weights": "Balanced", "l2_leaf_reg": 2.0})
         self.assertEqual(len(m.param_notes_), 7)
+
+    def test_early_stopping_follows_the_task_metric(self):
+        # наблюдение Ивана: остановка шла по метрике библиотеки (logloss, l2), а не по метрике задачи
+        X, y = make_data("classification", k=3, n=600)
+        expected = {"lightgbm": "f1_macro", "xgboost": "task_metric", "catboost": "TotalF1:average=Macro"}
+        for name in ("lightgbm", "xgboost", "catboost"):
+            with self.subTest(name):
+                m = model(name, "classification", n_classes=3, eval_metric="f1_macro", max_rounds=200, custom_eval=True)
+                m.fit(X.iloc[:400], y[:400], X.iloc[400:], y[400:])
+                self.assertIn("f1_macro" if name != "catboost" else "по TotalF1", m.eval_note_)
+                if name == "lightgbm":
+                    logged = m.model_.evals_result_["valid_0"]
+                elif name == "xgboost":
+                    logged = m.model_.evals_result()["validation_0"]
+                else:
+                    logged = m.model_.get_evals_result()["validation"]
+                self.assertIn(expected[name], logged)
+
+    def test_custom_stopping_is_off_by_default(self):
+        X, y = make_data("classification", k=3, n=400)
+        for name in ("lightgbm", "xgboost"):
+            with self.subTest(name):
+                m = model(name, "classification", n_classes=3, eval_metric="f1_macro", max_rounds=100)
+                m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+                self.assertIn("custom_stopping=True", m.eval_note_)
+                self.assertIsNone(m._stop_custom)
+        m = model("catboost", "classification", n_classes=3, eval_metric="f1_macro", max_rounds=50)
+        m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+        self.assertIn("TotalF1", m.eval_note_)  # у CatBoost встроенная — работает и без флага
+
+    def test_native_metrics_and_approximations(self):
+        X, y = make_data("regression", n=400)
+        m = model("lightgbm", "regression", eval_metric="mae", max_rounds=100).fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+        self.assertIn("l1", m.model_.evals_result_["valid_0"])
+        Xc, yc = make_data("classification", k=3, n=400)
+        m = model("lightgbm", "classification", n_classes=3, eval_metric="roc_auc", max_rounds=50)
+        m.fit(Xc.iloc[:300], yc[:300], Xc.iloc[300:], yc[300:])
+        self.assertIn("приближение", m.eval_note_)
+        m = model("catboost", "classification", n_classes=3, eval_metric="balanced_accuracy", max_rounds=30)
+        m.fit(Xc.iloc[:300], yc[:300], Xc.iloc[300:], yc[300:])
+        self.assertIn("по умолчанию", m.eval_note_)
+
+    def test_failing_custom_metric_does_not_crash_training(self):
+        X, y = make_data("classification", k=3, n=300)
+        broken = ml_metrics.Metric("broken", lambda yt, yp, labels: (_ for _ in ()).throw(ml_metrics.MetricError("x")), True,
+                           "classification", "labels")
+        m = model("lightgbm", "classification", n_classes=3, eval_metric=broken, max_rounds=50, custom_eval=True)
+        m.fit(X.iloc[:200], y[:200], X.iloc[200:], y[200:])
+        self.assertEqual(m.predict(X).shape, (300, 3))
+
+    def test_dart_is_removed(self):
+        # наблюдение Ивана: dart отключает раннюю остановку, и часть валидации съедает весь бюджет
+        X, y = make_data("regression")
+        for name, key in (("lightgbm", "boosting_type"), ("xgboost", "booster")):
+            with self.subTest(name):
+                m = model(name, "regression", params={key: "dart"}, max_rounds=200, early_stopping_rounds=5)
+                m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+                self.assertNotIn(key, m.params)
+                self.assertTrue(any("dart" in n for n in m.param_notes_))
+                self.assertLess(m.best_iteration_, 200)
+
+    def test_logloss_stays_finite_when_a_class_is_missing_from_fit(self):
+        # наблюдение Ивана: вероятность 0 у отсутствующего класса давала logloss около 34 на строку
+        X, y = make_data("classification", k=4)
+        keep = y != 3
+        proba = model("lightgbm", "classification", n_classes=4).fit(X[keep], y[keep]).predict(X)
+        value = ml_metrics.compute("logloss", y, proba, labels=[0, 1, 2, 3])
+        self.assertLess(value, 5.0)
 
     def test_errors(self):
         X, y = make_data("regression")
