@@ -463,6 +463,13 @@ class AddFeaturesTest(unittest.TestCase):
             base_fin = session._fit_run(out["base_run"])                   # старый запуск — на старых признаках
             self.assertEqual(len(base_fin["y"]["pred"]), 300)
 
+    def test_as_category_turns_codes_into_text(self):
+        X = pd.DataFrame({"mgr": [10, 20, 10, None]})
+        train, test, applied, errors = agent_tools.build_features(X.iloc[:3], X.iloc[3:], [{"op": "as_category", "col": "mgr"}])
+        self.assertEqual(applied[0]["name"], "mgr__cat")
+        self.assertEqual(list(train["mgr__cat"]), ["10.0", "20.0", "10.0"])
+        self.assertTrue(pd.isna(test["mgr__cat"].iloc[0]))
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)

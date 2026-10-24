@@ -272,6 +272,7 @@ FEATURE_GRAMMAR = {
     "count": {"op": "count", "col": "любой столбец (частота значения)"},
     "cross": {"op": "cross", "a": "категория", "b": "категория"},
     "nan_count": {"op": "nan_count"},
+    "as_category": {"op": "as_category", "col": "числовой столбец-код (id менеджера, MCC, регион)"},
 }
 _FORMULA = re.compile(r"^\s*([\w.]+)\s*([-+*/])\s*([\w.]+)\s*$")
 
@@ -338,6 +339,13 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list):
                 if value.nunique() > 0.5 * len(value):
                     raise ValueError(f"cross {a}×{b}: почти все значения уникальны")
                 name = f"{a}__x__{b}"
+            elif op == "as_category":
+                # числовой код (менеджер, MCC, регион) как категория: CatBoost считает по нему статистики таргета
+                col = spec["col"]
+                if col not in both.columns:
+                    raise ValueError(f"нет столбца {col!r}")
+                name = f"{col}__cat"
+                value = both[col].astype("string").where(both[col].notna()).astype(object)
             elif op == "nan_count":
                 name, value = "nan_count", both.isna().sum(axis=1).astype(float)
             else:
@@ -1519,7 +1527,8 @@ TOOL_SPECS = [
         "description": "Добавить признаки из грамматики (считаются без таргета). Принимаются партией, только если "
                        "быстрая модель на тех же фолдах устойчиво лучше; иначе данные не меняются. Формулы 'a/b', "
                        "'a-b', 'a*b', 'a+b' или словари: {op: ratio|diff|prod|sum, a, b}, {op: group_mean|group_std|"
-                       "group_dev|group_count, col, by}, {op: count, col}, {op: cross, a, b}, {op: nan_count}.",
+                       "group_dev|group_count, col, by}, {op: count, col}, {op: cross, a, b}, {op: nan_count}, "
+                       "{op: as_category, col} — числовой код как категория (id, MCC, регион).",
         "parameters": {
             "type": "object",
             "properties": {
