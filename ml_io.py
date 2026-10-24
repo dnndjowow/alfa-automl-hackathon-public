@@ -175,6 +175,11 @@ def find_task_files(task_md) -> TaskFiles:
                 "остальные — в extra_csv"
             )
             files.extra_csv.extend(p for p in options[1:] if p not in files.extra_csv)
+    if files.paths.get("train") is None and files.train_labels is not None:
+        # только train_labels.csv / train_target.csv: это и есть train (с признаками и таргетом)
+        files.paths["train"], files.train_labels = files.train_labels, None
+        files.warnings = [w for w in files.warnings if w != "файл роли 'train' не найден"]
+        files.warnings.append(f"отдельного train нет: как train используется {display_path(files.paths['train'], task_dir)}")
     for path in unrecognised:
         files.extra_csv.append(path)
         files.warnings.append(f"роль файла {display_path(path, task_dir)} не распознана")

@@ -105,6 +105,18 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         self.assertEqual(list(data.train.columns), ["a", "b", "target"])
         self.assertTrue(any("по порядку" in w for w in data.files.warnings))
 
+    def test_only_labels_file_is_used_as_train(self):
+        # ревью Ивана (25.10, №5): только train_labels.csv / train_target.csv с полным train — train был None
+        for name in ("train_labels.csv", "train_target.csv"):
+            with self.subTest(name):
+                root = self.write_task({name: "id,x,y\n1,0.5,0\n2,1.5,1\n3,2.5,0\n", "test.csv": "id,x\n4,3.5\n"},
+                                       f"`{name}` `test.csv`")
+                data = ml_io.load_task(root / "task.md")
+                self.assertEqual(data.train["y"].tolist(), [0, 1, 0])
+                self.assertIsNone(data.files.train_labels)
+                self.assertFalse(any("роли 'train' не найден" in w for w in data.files.warnings))
+                self.assertTrue(any("как train используется" in w for w in data.files.warnings))
+
     def test_unselected_candidates_are_kept_in_extra(self):
         root = self.write_task({"train.csv": "id,x,y\n1,2,3\n", "training.csv": "id,x,y\n1,2,3\n",
                                 "test.csv": "id,x\n2,3\n"}, "")
