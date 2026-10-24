@@ -49,31 +49,37 @@ def fallback_policy(session) -> None:
             return
         if task_type not in ("regression", "binary", "multiclass"):
             import ml_schema
-            # несколько таргетов: учим главный (первый), остальные столбцы ответа получат константу
+            # несколько таргетов: тип по первому, учатся все по очереди
             task_type = ml_schema.suggest_task_type(session.data.train[targets[0]], session.data.text)["type"]
         if task_type not in ("regression", "binary", "multiclass"):
             log(f"[fallback] тип задачи {task_type!r} не поддержан")
             return
         metric = suggested["metric"]
         family = "regression" if task_type == "regression" else "classification"
-        if metric is None or session_metric_family(metric) != family:
+        if metric is None or metric_family(metric) != family:
             metric = ("rmse" if family == "regression"
                       else "roc_auc" if task_type == "binary" and session.sample_suggests_proba() else "f1_macro")
-        result = session.call("set_task", {"target_cols": targets[:1], "id_cols": suggested["id_cols"],
+        result = session.call("set_task", {"target_cols": targets, "id_cols": suggested["id_cols"],
                                            "task_type": task_type, "metric": metric, "reason": "fallback"})
+        if not result.get("ok") and len(targets) > 1:
+            result = session.call("set_task", {"target_cols": targets[:1], "id_cols": suggested["id_cols"],
+                                               "task_type": task_type, "metric": metric, "reason": "fallback"})
         if not result.get("ok"):
             log(f"[fallback] set_task: {result.get('error')}")
             return
     if not session._ok_runs(full_only=True):
-        result = session.call("evaluate", {"model": "lightgbm", "hypothesis": "fallback: базовая модель"})
+        log_metric = session.setup["metric"] in ("rmsle", "msle")
+        result = session.call("evaluate", {"model": "lightgbm", "hypothesis": "fallback: базовая модель",
+                                           "target_transform": "log1p" if log_metric else None})
         if not result.get("ok"):
             log(f"[fallback] evaluate: {result.get('error')}")
 
 
-def session_metric_family(metric):
+def metric_family(metric):
+    import agent_tools
     import ml_metrics
     try:
-        return ml_metrics.get_metric(metric).task
+        return agent_tools.resolve_metric(metric).task
     except ml_metrics.MetricError:
         return None
 

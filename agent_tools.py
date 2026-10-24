@@ -3,6 +3,7 @@
 Session хранит состояние одного запуска: данные, выбранную постановку, эксперименты,
 лучший результат и записанный ответ. Методы tool_* не бросают исключений наружу:
 ошибка возвращается словарём {"ok": false, "error": ...}, чтобы LLM могла её учесть.
+Несколько таргетов обучаются по очереди одной конфигурацией; score — среднее по таргетам.
 """
 
 from __future__ import annotations
@@ -15,6 +16,7 @@ import re
 import shutil
 import time
 import traceback
+from dataclasses import replace
 from pathlib import Path
 from typing import Optional
 
@@ -42,7 +44,64 @@ _RESERVED_PARAMS = {
 }
 _VALIDATION_KEYS = ("strategy", "n_splits", "column", "direction")
 _PROBA_WORDS = re.compile(r"вероятност|probabilit|\bgini\b|джини|\bauc\b|log[\s_-]*loss", re.IGNORECASE)
+_POSITIVE_WORDS = {"1", "true", "yes", "да", "positive", "pos"}
 _TEXT_LIMIT = 600
+
+
+def _rmsle(yt, yp, labels):
+    return float(np.sqrt(np.mean((np.log1p(np.clip(yp, 0, None)) - np.log1p(np.clip(yt, 0, None))) ** 2)))
+
+
+def _msle(yt, yp, labels):
+    return float(np.mean((np.log1p(np.clip(yp, 0, None)) - np.log1p(np.clip(yt, 0, None))) ** 2))
+
+
+def _mape(yt, yp, labels):
+    return float(np.mean(np.abs(yt - yp) / np.maximum(np.abs(yt), 1e-9)))
+
+
+def _smape(yt, yp, labels):
+    return float(np.mean(2 * np.abs(yt - yp) / np.maximum(np.abs(yt) + np.abs(yp), 1e-9)))
+
+
+# метрики, которых нет в ml_metrics: тот же класс Metric, ml_tools принимает его вместо имени
+EXTRA_METRICS = {m.name: m for m in (
+    ml_metrics.Metric("rmsle", _rmsle, False, "regression", "values"),
+    ml_metrics.Metric("msle", _msle, False, "regression", "values"),
+    ml_metrics.Metric("mape", _mape, False, "regression", "values"),
+    ml_metrics.Metric("smape", _smape, False, "regression", "values"),
+)}
+_EXTRA_PATTERNS = {"rmsle": r"\brmsle\b|root mean squared log", "msle": r"\bmsle\b|mean squared log",
+                   "mape": r"\bmape\b|mean absolute percentage", "smape": r"\bsmape\b|symmetric mean absolute"}
+_METRIC_ALIASES = {"gini": "roc_auc", "giniindex": "roc_auc", "rocaucscore": "roc_auc",
+                   "multiclasslogloss": "logloss", "multilogloss": "logloss",
+                   "rootmeansquaredlogarithmicerror": "rmsle", "meanabsolutepercentageerror": "mape"}
+
+
+def resolve_metric(name) -> ml_metrics.Metric:
+    """Метрика по имени: ml_metrics, затем свои (RMSLE, MAPE, ...) и синонимы (Gini ~ ROC AUC)."""
+    try:
+        return ml_metrics.get_metric(name)
+    except ml_metrics.MetricError:
+        key = re.sub(r"[^a-z0-9]", "", str(name).lower())
+        key = _METRIC_ALIASES.get(key, key)
+        if key in EXTRA_METRICS:
+            return EXTRA_METRICS[key]
+        try:
+            return ml_metrics.get_metric(key)
+        except ml_metrics.MetricError:
+            known = ml_metrics.available_metrics() + list(EXTRA_METRICS)
+            raise ml_metrics.MetricError(f"неизвестная метрика {name!r}; доступны: {', '.join(known)}")
+
+
+def detect_extra_metric(text: str) -> Optional[str]:
+    """Метрика из EXTRA_METRICS, упомянутая в условии (её не находит ml_schema)."""
+    hits = []
+    for name, pattern in _EXTRA_PATTERNS.items():
+        match = re.search(pattern, text or "", flags=re.IGNORECASE)
+        if match:
+            hits.append((match.start(), name))
+    return min(hits)[1] if hits else None
 
 
 def _short(text, limit=_TEXT_LIMIT):
@@ -104,6 +163,29 @@ def match_class_columns(columns, classes) -> Optional[dict]:
     if len(mapping) == len(columns) and len(set(mapping.values())) == len(columns):
         return mapping
     return None
+
+
+def guess_positive_class(classes, y: pd.Series, text: str):
+    """Класс, вероятность которого пишем в бинарной задаче.
+
+    1) класс, названный в условии рядом со словом «вероятность»; 2) 1 / true / yes;
+    3) более редкий класс (обычно это событие: дефолт, отток, мошенничество)."""
+    names = {c: _label_text(c) for c in classes}
+    clean = (text or "").replace("*", "")
+    for phrase in re.finditer(r"вероятност|probabilit", clean, flags=re.IGNORECASE):
+        window = clean[phrase.end(): phrase.end() + 160]
+        found = []
+        for cls, name in names.items():
+            match = re.search(r"(?<![\w<>=.-])" + re.escape(name) + r"(?![\w<>=.-])", window)
+            if match:
+                found.append((match.start(), cls))
+        if found:
+            return min(found, key=lambda item: item[0])[1]
+    for cls, name in names.items():
+        if name.lower() in _POSITIVE_WORDS:
+            return cls
+    counts = y.value_counts()
+    return min(classes, key=lambda c: counts.get(c, 0))
 
 
 class SubmissionError(ValueError):
@@ -192,19 +274,20 @@ class Session:
     # ---- обзор задачи -------------------------------------------------------
     def overview(self, max_columns: int = 60) -> dict:
         schema = self.profile["schema"]
+        extra = detect_extra_metric(self.data.text)
         return {
             "profile_text": ml_profile.format_profile(self.profile, max_columns=max_columns),
             "suggested": {
                 "target_cols": schema["target_cols"], "id_cols": schema["id_cols"],
                 "output_columns": schema["output_columns"], "confidence": schema["confidence"],
                 "task_type": self.profile.get("task", {}).get("type"),
-                "metric": self.profile["metric"].get("primary"),
-                "metric_source": self.profile["metric"].get("source"),
+                "metric": extra or self.profile["metric"].get("primary"),
+                "metric_source": "своя метрика агента" if extra else self.profile["metric"].get("source"),
                 "answer_looks_like_probability": self.sample_suggests_proba(),
             },
             "all_train_columns": [str(c) for c in self.data.train.columns] if self.data.train is not None else [],
             "extra_csv": [ml_io.display_path(p, self.task_dir) for p in self.data.files.extra_csv],
-            "available": {"models": list(MODELS), "metrics": ml_metrics.available_metrics(),
+            "available": {"models": list(MODELS), "metrics": ml_metrics.available_metrics() + list(EXTRA_METRICS),
                           "task_types": list(TASK_TYPES), "validation": list(ml_validation.STRATEGIES),
                           "target_transforms": [t for t in ml_tools.TARGET_TRANSFORMS if t]},
             "time_left_s": round(self.time_left()),
@@ -244,19 +327,18 @@ class Session:
         return _jsonable(out)
 
     def tool_set_task(self, target_cols, task_type, metric, id_cols=None, drop_features=None,
-                      prediction_format="auto", reason=""):
-        """Зафиксировать постановку: таргет, id, тип задачи, метрику и формат ответа."""
+                      prediction_format="auto", positive_class=None, reason=""):
+        """Зафиксировать постановку: таргеты, id, тип задачи, метрику и формат ответа."""
         if isinstance(target_cols, str):
             target_cols = [target_cols]
         if isinstance(id_cols, str):
             id_cols = [id_cols]
         if task_type not in TASK_TYPES:
             return {"ok": False, "error": f"task_type должен быть одним из {TASK_TYPES}"}
-        if not target_cols or len(target_cols) != 1:
-            return {"ok": False, "error": "обучается ровно один таргет: выберите главный; остальные столбцы "
-                                          "ответа код заполнит константой по train"}
+        if not target_cols:
+            return {"ok": False, "error": "укажите target_cols"}
         try:
-            resolved = ml_metrics.get_metric(metric)
+            resolved = resolve_metric(metric)
         except ml_metrics.MetricError as error:
             return {"ok": False, "error": str(error)}
         family = "regression" if task_type == "regression" else "classification"
@@ -274,50 +356,72 @@ class Session:
             if col not in ids and col not in target_cols and col in test_cols:
                 ids.append(col)
                 notes.append(f"{col!r} есть в шаблоне ответа и в test: считаю его id и убираю из признаков")
-        schema = ml_schema.resolve_schema(suggestion, id_cols=ids, target_cols=target_cols)
+        schema = ml_schema.resolve_schema(suggestion, id_cols=ids, target_cols=list(target_cols))
         drop = [c for c in (drop_features or []) if c in schema.feature_cols]
         if drop:
-            schema = ml_schema.Schema(schema.id_cols, schema.target_cols,
-                                      tuple(c for c in schema.feature_cols if c not in drop), schema.output_columns)
-        split = ml_data.split_task(self.data, schema)
-        y = split.y_train
-        if family == "regression" and not pd.api.types.is_numeric_dtype(y):
-            return {"ok": False, "error": f"таргет {target_cols[0]!r} не числовой: регрессия невозможна"}
-        if family == "classification" and y.nunique() < 2:
-            return {"ok": False, "error": "в таргете меньше двух классов"}
-        if task_type == "binary" and y.nunique() != 2:
-            return {"ok": False, "error": f"в таргете {y.nunique()} классов, а не 2: выберите multiclass"}
+            schema = replace(schema, feature_cols=tuple(c for c in schema.feature_cols if c not in drop))
+        splits = {t: ml_data.split_task(self.data, replace(schema, target_cols=(t,))) for t in schema.target_cols}
+        for target, split in splits.items():
+            y = split.y_train
+            if family == "regression" and not pd.api.types.is_numeric_dtype(y):
+                return {"ok": False, "error": f"таргет {target!r} не числовой: регрессия невозможна"}
+            if family == "classification" and y.nunique() < 2:
+                return {"ok": False, "error": f"в таргете {target!r} меньше двух классов"}
+            if task_type == "binary" and y.nunique() != 2:
+                return {"ok": False, "error": f"в {target!r} {y.nunique()} классов, а не 2: выберите multiclass"}
+        main = splits[schema.target_cols[0]]
+        positive = {}
+        if task_type == "binary":
+            for target, split in splits.items():
+                classes = ml_data.LabelCodec().fit(split.y_train).classes_
+                chosen = None
+                if positive_class is not None:
+                    chosen = next((c for c in classes if _label_text(c) == _label_text(positive_class)), None)
+                    if chosen is None:
+                        return {"ok": False, "error": f"positive_class {positive_class!r} нет среди классов "
+                                                      f"{[_label_text(c) for c in classes]}"}
+                positive[target] = chosen if chosen is not None else guess_positive_class(classes, split.y_train,
+                                                                                          self.data.text)
 
-        # профиль для ml_tools с выбранными типом задачи и метрикой (иначе там останется эвристика)
+        # профиль для ml_tools с выбранными типом задачи и метрикой (иначе там останется эвристика);
+        # своей метрики ml_tools по имени не знает — для его проверки семейства подставляем стандартную
         profile = copy.deepcopy(self.profile)
         profile["task"] = {"type": task_type, "ambiguous": False, "notes": ["выбрано агентом"]}
-        profile["metric"] = dict(profile["metric"], primary=resolved.name, higher_is_better=resolved.higher_is_better)
-        plan = ml_validation.suggest_validation(profile, split.X_train)
-        if plan.get("column") and plan["column"] not in split.X_train.columns:
+        known = resolved.name if resolved.name in ml_metrics.available_metrics() else \
+            ("rmse" if family == "regression" else "f1_macro")
+        profile["metric"] = dict(profile["metric"], primary=known, higher_is_better=resolved.higher_is_better)
+        plan = ml_validation.suggest_validation(profile, main.X_train)
+        if plan.get("column") and plan["column"] not in main.X_train.columns:
             # временной столбец убран из признаков: схема по нему невозможна, берём следующую по смыслу
             profile_no_time = copy.deepcopy(profile)
             profile_no_time.get("train_test", {})["out_of_train_range_share"] = {}
             notes.append(f"столбца {plan['column']!r} нет в признаках: временная схема заменена")
-            plan = ml_validation.suggest_validation(profile_no_time, split.X_train)
+            plan = ml_validation.suggest_validation(profile_no_time, main.X_train)
 
         if self.written and self.written.get("run_id"):
             self.written["stale"] = True  # ответ от прошлой постановки остаётся на диске до лучшего
-        self.setup = {"schema": schema, "split": split, "profile": profile, "task_type": task_type,
-                      "metric": resolved.name, "higher_is_better": resolved.higher_is_better,
-                      "prediction_format": prediction_format, "reason": reason}
+        self.setup = {"schema": schema, "splits": splits, "split": main, "profile": profile, "task_type": task_type,
+                      "metric": resolved.name, "metric_obj": resolved, "higher_is_better": resolved.higher_is_better,
+                      "prediction_format": prediction_format, "positive": positive, "reason": reason}
         self.plan, self.plan_key = plan, _validation_key(plan)
         self.runs = {}
         self.log(f"[set_task] target={list(schema.target_cols)} id={list(schema.id_cols)} {task_type} "
-                 f"metric={resolved.name} features={len(schema.feature_cols)} validation={plan['strategy']}")
-        return {
-            "ok": True, "n_train": len(split.X_train), "n_test": len(split.X_test),
+                 f"metric={resolved.name} features={len(schema.feature_cols)} validation={plan['strategy']}"
+                 + (f" positive={ {t: _label_text(c) for t, c in positive.items()} }" if positive else ""))
+        out = {
+            "ok": True, "n_train": len(main.X_train), "n_test": len(main.X_test),
             "n_features": len(schema.feature_cols), "id_cols": list(schema.id_cols), "dropped_features": drop,
-            "target_summary": ml_profile.profile_target(y, task_type),
+            "target_summary": {t: ml_profile.profile_target(s.y_train, task_type) for t, s in splits.items()},
             "metric": resolved.name, "higher_is_better": resolved.higher_is_better,
             "validation": plan, "output_columns": self._output_columns(),
-            "answer_as_probability": self._wants_proba() if task_type == "binary" else False,
-            "notes": notes, "warnings": split.warnings,
+            "notes": notes, "warnings": main.warnings,
         }
+        if task_type == "binary":
+            out["answer_as_probability"] = self._wants_proba()
+            out["positive_class"] = {t: _label_text(c) for t, c in positive.items()}
+        if len(splits) > 1:
+            out["note"] = f"{len(splits)} таргета обучаются по очереди одной конфигурацией; score — среднее"
+        return out
 
     def tool_evaluate(self, model="lightgbm", params=None, learning_rate=0.05, target_transform=None,
                       validation=None, subsample=None, time_budget_s=None, max_rounds=3000, hypothesis=""):
@@ -349,35 +453,37 @@ class Session:
         self.log(f"[evaluate {run_id}] {model} lr={learning_rate} transform={target_transform} params={params} "
                  f"validation={plan['strategy']} subsample={subsample} budget={budget:.0f}s "
                  f"hypothesis={_short(hypothesis, 200)}")
-        result = ml_tools.train_eval(
-            self.setup["split"], self.setup["profile"], model=model, metric=self.setup["metric"], validation=plan,
-            params=params, task_type=self.setup["task_type"], target_transform=target_transform, n_jobs=self.n_jobs,
-            seed=self.seed, time_budget=budget, max_rounds=int(max_rounds), learning_rate=float(learning_rate),
-            subsample=subsample,
-        )
-        summary = result.to_dict()
-        summary["notes"] = [_short(n, 300) for n in summary.get("notes", [])][-5:]
-        summary["validation"] = {k: summary.get("validation", {}).get(k) for k in _VALIDATION_KEYS + ("effective",)}
+        evals, splits, started = {}, self.setup["splits"], time.monotonic()
+        for number, (target, split) in enumerate(splits.items()):
+            # бюджет делится поровну; недоиспользованное время переходит следующим таргетам
+            share = max(10.0, (budget - (time.monotonic() - started)) / (len(splits) - number))
+            evals[target] = ml_tools.train_eval(
+                split, self.setup["profile"], model=model, metric=self.setup["metric_obj"], validation=plan,
+                params=params, task_type=self.setup["task_type"], target_transform=target_transform, n_jobs=self.n_jobs,
+                seed=self.seed, time_budget=share, max_rounds=int(max_rounds),
+                learning_rate=float(learning_rate), subsample=subsample,
+            )
+        summary = self._summary(evals)
         key = _validation_key(plan)
         changed = key != self.plan_key
-        if changed and result.status == "ok" and subsample is None:
+        status = summary["status"]
+        if changed and status == "ok" and subsample is None:
             # новая схема становится текущей только после успешного полного запуска
             self.plan, self.plan_key = plan, key
         config = {"model": model, "params": params, "learning_rate": float(learning_rate),
                   "target_transform": target_transform, "max_rounds": int(max_rounds), "subsample": subsample}
-        self.runs[run_id] = {"config": config, "result": summary, "eval": result, "key": key,
-                             "hypothesis": hypothesis}
+        self.runs[run_id] = {"config": config, "result": summary, "eval": evals, "key": key, "hypothesis": hypothesis}
         best = self.best_run()
-        self.log(f"[evaluate {run_id}] status={result.status} score={summary.get('score')} "
-                 f"({result.seconds:.0f}s) best={best}")
-        out = {"ok": result.status == "ok", "run_id": run_id, **summary, "best_run_id": best,
+        self.log(f"[evaluate {run_id}] status={status} score={summary.get('score')} "
+                 f"({summary['seconds']:.0f}s) best={best}")
+        out = {"ok": status == "ok", "run_id": run_id, **summary, "best_run_id": best,
                "best_score": self.runs[best]["result"]["score"] if best else None, "dropped_params": dropped,
                "comparable_runs": [r for r, v in self.runs.items() if v["key"] == self.plan_key
                                    and v["config"]["subsample"] is None]}
         if subsample is not None:
             out["note"] = "запуск на подвыборке: только для прикидки, с полными запусками не сравнивается"
         elif changed:
-            out["note"] = ("схема валидации изменилась: прежние запуски с этим несравнимы" if result.status == "ok"
+            out["note"] = ("схема валидации изменилась: прежние запуски с этим несравнимы" if status == "ok"
                            else "новая схема не сработала: текущей осталась прежняя")
         if self.auto_early and out["ok"] and subsample is None and not (self.written or {}).get("run_id"):
             # ранний настоящий ответ: страхует от сбоев дальнейшего диалога
@@ -411,9 +517,34 @@ class Session:
         return {"ok": True, "best_run_id": self.best_run(), "written": self.written}
 
     # ---- выбор запусков -------------------------------------------------------
+    def _summary(self, evals: dict) -> dict:
+        """Сводка запуска для LLM: один таргет — как EvalResult.to_dict(), несколько — среднее и разбивка."""
+        parts = {}
+        for target, result in evals.items():
+            part = result.to_dict()
+            part["notes"] = [_short(n, 300) for n in part.get("notes", [])][-5:]
+            part["validation"] = {k: part.get("validation", {}).get(k) for k in _VALIDATION_KEYS + ("effective",)}
+            parts[target] = part
+        first = next(iter(parts.values()))
+        if len(parts) == 1:
+            return first
+        ok = all(p["status"] == "ok" for p in parts.values())
+        scores = [p["score"] for p in parts.values()]
+        return {"status": "ok" if ok else "error", "model": first["model"], "metric": first["metric"],
+                "higher_is_better": first["higher_is_better"],
+                "score": float(np.mean(scores)) if ok and None not in scores else None,
+                "fold_scores": first["fold_scores"], "seconds": float(sum(p["seconds"] for p in parts.values())),
+                "validation": first["validation"],
+                "error": "; ".join(f"{t}: {p['error']}" for t, p in parts.items() if p["error"]) or None,
+                "per_target": {t: {k: p[k] for k in ("score", "fold_scores", "best_iterations", "seconds", "notes")}
+                               for t, p in parts.items()}}
+
     def _ok_runs(self, full_only=False):
         return [r for r, v in self.runs.items() if v["result"]["status"] == "ok"
                 and not (full_only and v["config"]["subsample"] is not None)]
+
+    def _is_better(self, new, old) -> bool:
+        return ml_metrics.is_better(self.setup["metric_obj"], new, old)
 
     def best_run(self) -> Optional[str]:
         """Лучший полный запуск на текущей схеме; если таких нет — на последней схеме с успешными."""
@@ -426,8 +557,7 @@ class Session:
             pool = self._ok_runs()  # одни подвыборки — лучше, чем ничего
         best = None
         for run_id in pool:
-            if best is None or ml_metrics.is_better(self.setup["metric"], self.runs[run_id]["result"]["score"],
-                                                    self.runs[best]["result"]["score"]):
+            if best is None or self._is_better(self.runs[run_id]["result"]["score"], self.runs[best]["result"]["score"]):
                 best = run_id
         return best
 
@@ -447,7 +577,7 @@ class Session:
             return False
         if old["key"] != new["key"]:
             return not automatic
-        return ml_metrics.is_better(self.setup["metric"], new["result"]["score"], old["result"]["score"])
+        return self._is_better(new["result"]["score"], old["result"]["score"])
 
     # ---- внутреннее ----------------------------------------------------------
     def _plan_from(self, validation):
@@ -479,7 +609,7 @@ class Session:
     def _eval_budget(self, requested) -> Optional[float]:
         """Бюджет эксперимента: не больше остатка за вычетом финального обучения; None — времени нет."""
         reserve = 120.0
-        best = self.best_run()
+        best = self.best_run() if self.setup else None
         if best:
             reserve = max(reserve, self.estimate_final_seconds(best))
         left = self.time_left() - reserve
@@ -519,95 +649,109 @@ class Session:
 
     def _finalize(self, run_id, class_weights="auto") -> dict:
         run, setup = self.runs[run_id], self.setup
-        config, ev = run["config"], run["eval"]
-        n_rounds = ml_tools.rounds_from(ev)
-        budget = max(10.0, self.time_left() + self.final_slack)
-        self.log(f"[finalize {run_id}] {config['model']} n_rounds={n_rounds} budget={budget:.0f}s")
-        out = ml_tools.fit_predict(
-            setup["split"], setup["profile"], model=config["model"], n_rounds=n_rounds, params=config["params"],
-            task_type=setup["task_type"], target_transform=config["target_transform"], n_jobs=self.n_jobs,
-            seed=self.seed, time_budget=budget, max_rounds=config["max_rounds"], learning_rate=config["learning_rate"],
-        )
-        if out.get("status") != "ok":
-            return {"ok": False, "error": f"финальное обучение не удалось: {_short(out.get('error'))}"}
-        notes = list(out.get("notes", []))
-        if n_rounds and out.get("n_rounds") and out["n_rounds"] < 0.8 * n_rounds:
-            notes.append(f"обучение урезано по времени: {out['n_rounds']} из {n_rounds} раундов")
-            if (self.written or {}).get("run_id"):
-                return {"ok": False, "error": "финальное обучение урезано по времени; прежний ответ сохранён",
-                        "notes": notes}
-        pred, proba, classes, weights_info = out["pred"], out.get("proba"), out.get("classes"), None
-        if setup["task_type"] != "regression":
-            pred, weights_info = self._class_weights(run, out, class_weights)
-        frame, frame_notes = self._assemble(setup, pred, proba, classes)
+        config = run["config"]
+        predictions, notes, weights_info = {}, [], {}
+        for target, split in setup["splits"].items():
+            ev = run["eval"][target]
+            n_rounds = ml_tools.rounds_from(ev)
+            budget = max(10.0, self.time_left() + self.final_slack)
+            self.log(f"[finalize {run_id}] {target}: {config['model']} n_rounds={n_rounds} budget={budget:.0f}s")
+            out = ml_tools.fit_predict(
+                split, setup["profile"], model=config["model"], n_rounds=n_rounds, params=config["params"],
+                task_type=setup["task_type"], target_transform=config["target_transform"], n_jobs=self.n_jobs,
+                seed=self.seed, time_budget=budget, max_rounds=config["max_rounds"],
+                learning_rate=config["learning_rate"],
+            )
+            if out.get("status") != "ok":
+                return {"ok": False, "error": f"финальное обучение {target} не удалось: {_short(out.get('error'))}"}
+            notes += list(out.get("notes", []))
+            if n_rounds and out.get("n_rounds") and out["n_rounds"] < 0.8 * n_rounds:
+                notes.append(f"{target}: обучение урезано по времени: {out['n_rounds']} из {n_rounds} раундов")
+                if (self.written or {}).get("run_id"):
+                    return {"ok": False, "error": "финальное обучение урезано по времени; прежний ответ сохранён",
+                            "notes": notes}
+            pred = out["pred"]
+            if setup["task_type"] != "regression":
+                pred, weights_info[target] = self._class_weights(run, target, out, class_weights)
+            elif split.y_train.min() >= 0:
+                pred = np.clip(pred, 0, None)  # неотрицательный таргет: отрицательный прогноз только вредит
+            predictions[target] = (pred, out.get("proba"), out.get("classes"))
+        frame, frame_notes = self._assemble(setup, predictions)
         path = write_submission(frame, self.task_dir, len(setup["split"].X_test), setup["schema"].id_cols)
         self.written = {"run_id": run_id, "score": run["result"]["score"], "model": config["model"]}
         self.log(f"[finalize {run_id}] записан {path} ({len(frame)} строк), cv={run['result']['score']}")
         return {"ok": True, "path": str(path), "rows": len(frame), "columns": list(frame.columns),
-                "run_id": run_id, "cv_score": run["result"]["score"], "n_rounds": out.get("n_rounds"),
-                "class_weights": weights_info, "notes": notes + frame_notes, "warnings": out.get("warnings", [])[:5]}
+                "run_id": run_id, "cv_score": run["result"]["score"],
+                "class_weights": {t: w for t, w in weights_info.items() if w} or None,
+                "notes": notes + frame_notes}
 
-    def _class_weights(self, run, out, mode):
+    def _class_weights(self, run, target, out, mode):
         """Веса классов под Macro F1 по OOF-вероятностям; применяются, только если честно помогают."""
-        setup, ev = self.setup, run["eval"]
+        setup, ev = self.setup, run["eval"][target]
+        split = setup["splits"][target]
         labels = out["pred"]
         if mode == "off" or setup["metric"] != "f1_macro" or run["config"]["subsample"]:
             return labels, None
         if ev.oof_pred is None or ev.oof_index is None or len(ev.oof_index) < 200:
             return labels, None
         try:
-            codec = ml_data.LabelCodec().fit(setup["split"].y_train)
-            truth = codec.encode(setup["split"].y_train.iloc[ev.oof_index])
-            groups = ml_validation.row_groups(setup["split"].X_train.iloc[ev.oof_index])
+            codec = ml_data.LabelCodec().fit(split.y_train)
+            truth = codec.encode(split.y_train.iloc[ev.oof_index])
+            groups = ml_validation.row_groups(split.X_train.iloc[ev.oof_index])
             choice = ml_postprocess.choose_class_weights(ev.oof_pred, truth, groups=groups)
             info = {"applied": bool(choice["applied"]), "holdout_gain": choice["holdout_gain"]}
             if choice["applied"]:
                 labels = codec.decode(ml_postprocess.apply_class_weights(out["proba"], choice["weights"]))
                 info["weights"] = dict(zip([str(c) for c in codec.classes_], choice["weights"]))
-            self.log(f"[class_weights] {info}")
+            self.log(f"[class_weights] {target}: {info}")
             return labels, info
         except Exception as error:
             return labels, {"applied": False, "error": _short(error, 200)}
 
-    def _assemble(self, setup, pred, proba=None, classes=None):
-        """Собрать ответ в порядке test по столбцам шаблона. Каждый столбец заполняется по своему правилу;
-        предсказание пишется только в столбец таргета или в столбцы вероятностей классов."""
+    def _assemble(self, setup, predictions: dict):
+        """Собрать ответ в порядке test по столбцам шаблона. predictions: таргет -> (метки/значения, proba, classes).
+        Каждый столбец заполняется по своему правилу; прогноз пишется только в столбец своего таргета
+        или в столбцы вероятностей классов."""
         schema, split = setup["schema"], setup["split"]
         n = len(split.X_test)
         ids = split.test_ids.reset_index(drop=True)
         test = self.data.test.reset_index(drop=True)
         train, sample = self.data.train, self.data.sample_submission
         columns = self._output_columns(schema)
-        target = schema.target_cols[0]
         classification = setup["task_type"] != "regression"
         notes, frame = [], pd.DataFrame(index=range(n))
+        main = schema.target_cols[0]
 
         class_map = None
-        if classification and proba is not None and setup["prediction_format"] != "label":
-            candidates = [c for c in columns if c not in ids.columns and c != target]
+        pred, proba, classes = predictions[main]
+        if classification and proba is not None and setup["prediction_format"] != "label" and len(predictions) == 1:
+            candidates = [c for c in columns if c not in ids.columns and c != main]
             if len(candidates) >= 2:
                 class_map = match_class_columns(candidates, classes)
                 if class_map is None and len(candidates) == len(classes):
                     class_map = dict(zip(candidates, classes))
                     notes.append(f"столбцы {candidates} сопоставлены классам {list(map(str, classes))} по порядку")
-        proba_target = (classification and proba is not None and len(classes) == 2
-                        and target in columns and self._wants_proba(setup))
-        labels = _clean_labels(pred) if classification else np.asarray(pred, dtype=float)
-        if classification and not proba_target and sample is not None and target in sample.columns \
-                and pd.api.types.is_integer_dtype(sample[target]) and labels.dtype.kind == "f":
-            labels = labels.astype("int64")
+        wants_proba = classification and setup["task_type"] == "binary" and self._wants_proba(setup)
 
         for col in columns:
             if col in ids.columns:
                 frame[col] = ids[col].to_numpy()
-            elif col == target:
-                if proba_target:
-                    frame[col] = np.asarray(proba)[:, 1]
-                    notes.append(f"{col}: вероятность класса {_label_text(classes[1])!r}")
-                else:
+            elif col in predictions:
+                pred, proba, classes = predictions[col]
+                if wants_proba and proba is not None and len(classes) == 2:
+                    positive = setup["positive"].get(col, classes[1])
+                    frame[col] = np.asarray(proba)[:, list(classes).index(positive)]
+                    notes.append(f"{col}: вероятность класса {_label_text(positive)!r}")
+                elif classification:
+                    labels = _clean_labels(pred)
+                    if sample is not None and col in sample.columns and labels.dtype.kind == "f" \
+                            and pd.api.types.is_integer_dtype(sample[col]):
+                        labels = labels.astype("int64")
                     frame[col] = labels
+                else:
+                    frame[col] = np.asarray(pred, dtype=float)
             elif class_map and col in class_map:
-                frame[col] = np.asarray(proba)[:, list(classes).index(class_map[col])]
+                frame[col] = np.asarray(predictions[main][1])[:, list(predictions[main][2]).index(class_map[col])]
             elif col in test.columns:
                 frame[col] = test[col].to_numpy()
                 notes.append(f"{col}: скопирован из test")
@@ -630,25 +774,33 @@ class Session:
             suggestion = self.profile["schema"]
             if not suggestion["target_cols"]:
                 return None
-            target = suggestion["target_cols"][0]
-            schema = ml_schema.resolve_schema(suggestion, id_cols=suggestion["id_cols"], target_cols=[target])
-            split = ml_data.split_task(self.data, schema)
-            y = split.y_train
+            schema = ml_schema.resolve_schema(suggestion, id_cols=suggestion["id_cols"],
+                                              target_cols=suggestion["target_cols"])
             kind = self.profile.get("task", {}).get("type")
-            regression = kind == "regression" or (kind not in ("binary", "multiclass")
-                                                  and pd.api.types.is_numeric_dtype(y) and y.nunique() > 20)
-            n = len(split.X_test)
-            setup = {"schema": schema, "split": split, "metric": self.profile["metric"].get("primary") or "",
-                     "task_type": "regression" if regression else ("binary" if y.nunique() == 2 else "multiclass"),
+            predictions, task_type, positive = {}, None, {}
+            split = None
+            for target in schema.target_cols:
+                split = split or ml_data.split_task(self.data, replace(schema, target_cols=(target,)))
+                y = self.data.train[target].dropna()
+                n = len(split.X_test)
+                regression = kind == "regression" or (kind not in ("binary", "multiclass")
+                                                      and pd.api.types.is_numeric_dtype(y) and y.nunique() > 20)
+                if regression:
+                    task_type = task_type or "regression"
+                    predictions[target] = (np.full(n, float(y.median())), None, None)
+                else:
+                    task_type = task_type or ("binary" if y.nunique() == 2 else "multiclass")
+                    counts = y.value_counts(normalize=True)
+                    classes = np.array(sorted(counts.index, key=str))
+                    priors = np.tile([counts[c] for c in classes], (n, 1))
+                    predictions[target] = (np.repeat(counts.index[0], n), priors, classes)
+                    if len(classes) == 2:
+                        positive[target] = guess_positive_class(classes, y, self.data.text)
+            setup = {"schema": schema, "split": split, "task_type": task_type, "positive": positive,
+                     "metric": detect_extra_metric(self.data.text) or self.profile["metric"].get("primary") or "",
                      "prediction_format": "auto"}
-            if regression:
-                frame, notes = self._assemble(setup, np.full(n, float(y.median())))
-            else:
-                counts = y.value_counts(normalize=True)
-                classes = np.array(sorted(counts.index, key=str))
-                priors = np.tile([counts[c] for c in classes], (n, 1))
-                frame, notes = self._assemble(setup, np.repeat(counts.index[0], n), priors, classes)
-            write_submission(frame, self.task_dir, n, schema.id_cols)
+            frame, notes = self._assemble(setup, predictions)
+            write_submission(frame, self.task_dir, len(split.X_test), schema.id_cols)
             self.written = {"run_id": None, "score": None, "model": "constant"}
             self.log(f"[safety] записан страховочный ответ {list(frame.columns)}; {notes[:3]}")
             return self.written
@@ -660,15 +812,14 @@ class Session:
 TOOL_SPECS = [
     {
         "name": "set_task",
-        "description": "Зафиксировать постановку задачи по task.md и профилю данных: таргет, id, тип задачи, "
+        "description": "Зафиксировать постановку задачи по task.md и профилю данных: таргеты, id, тип задачи, "
                        "метрику качества и формат ответа. Вызвать первым; повторный вызов начинает эксперименты "
                        "заново (записанный ответ остаётся на диске, пока его не заменит лучший).",
         "parameters": {
             "type": "object",
             "properties": {
                 "target_cols": {"type": "array", "items": {"type": "string"},
-                                "description": "Столбец-таргет, ровно один. Если таргетов несколько, выберите главный: "
-                                               "остальные столбцы ответа заполнятся константой"},
+                                "description": "Столбцы-таргеты. Несколько таргетов одного типа обучаются по очереди"},
                 "id_cols": {"type": "array", "items": {"type": "string"},
                             "description": "Столбцы-идентификаторы строк для ответа; [] если их нет"},
                 "task_type": {"type": "string", "enum": list(TASK_TYPES)},
@@ -677,6 +828,8 @@ TOOL_SPECS = [
                                   "description": "Признаки, которые нельзя использовать (утечка, служебные)"},
                 "prediction_format": {"type": "string", "enum": ["auto", "label", "proba"],
                                       "description": "Классификация: метки или вероятности; auto — по метрике и шаблону ответа"},
+                "positive_class": {"type": "string",
+                                   "description": "Бинарная задача с вероятностями: класс, вероятность которого просят в условии"},
                 "reason": {"type": "string", "description": "Коротко: почему так"},
             },
             "required": ["target_cols", "task_type", "metric"],
@@ -696,7 +849,8 @@ TOOL_SPECS = [
                                           "catboost depth, l2_leaf_reg"},
                 "learning_rate": {"type": "number"},
                 "target_transform": {"type": "string", "enum": ["none", "log1p"],
-                                     "description": "Только регрессия: log1p для неотрицательного скошенного таргета"},
+                                     "description": "Только регрессия: log1p для неотрицательного скошенного таргета "
+                                                    "и для метрик RMSLE/MSLE"},
                 "validation": {"type": "object",
                                "description": "Сменить схему: {strategy: temporal|group|stratified|kfold, n_splits, "
                                               "column (только temporal: числовой признак времени), "

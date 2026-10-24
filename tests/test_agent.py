@@ -4,6 +4,7 @@ import time
 import unittest
 from pathlib import Path
 
+import numpy as np
 import pandas as pd
 
 import agent_llm
@@ -123,6 +124,72 @@ class AgentLoopTest(unittest.TestCase):
         self.assertIsNotNone(session.write_constant())
         sub = pd.read_csv(task.task_md.parent / "submission.csv")
         self.assertEqual(len(sub), len(task.truth))
+
+
+class GeneralizationTest(unittest.TestCase):
+    """Постановки из проверки на внешних датасетах (tests/external_tasks.py)."""
+
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def test_positive_class_from_task_text(self):
+        y = pd.Series(["good"] * 70 + ["bad"] * 30)
+        text = "Оцените вероятность того, что заёмщик плохой (`risk` = `bad`; хорошие — `good`)."
+        self.assertEqual(agent_tools.guess_positive_class(["bad", "good"], y, text), "bad")
+        self.assertEqual(agent_tools.guess_positive_class([0, 1], pd.Series([0, 1, 1]), ""), 1)
+        self.assertEqual(agent_tools.guess_positive_class(["a", "b"], pd.Series(["a"] * 9 + ["b"]), ""), "b")
+        text = "вероятность того, что доход больше (`income` = `>50K`; иначе `<=50K`)"
+        self.assertEqual(agent_tools.guess_positive_class(["<=50K", ">50K"], pd.Series(["<=50K", ">50K"]), text), ">50K")
+
+    def test_binary_probability_of_named_class(self):
+        task = make_task(self.tmp, kind="binary", n_train=600, target="t")
+        text = task.task_md.read_text(encoding="utf-8") + "\nНужна вероятность класса `alpha`; метрика ROC AUC.\n"
+        task.task_md.write_text(text, encoding="utf-8")
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        out = session.call("set_task", {"target_cols": ["t"], "id_cols": ["id"], "task_type": "binary", "metric": "roc_auc"})
+        self.assertEqual(out["positive_class"], {"t": "alpha"})
+        session.call("evaluate", {"model": "lightgbm", **FAST})
+        sub = pd.read_csv(task.task_md.parent / "submission.csv")
+        from sklearn.metrics import roc_auc_score
+        self.assertGreater(roc_auc_score(task.truth["t"] == "alpha", sub["t"]), 0.7)
+        bad = session.call("set_task", {"target_cols": ["t"], "id_cols": ["id"], "task_type": "binary",
+                                        "metric": "roc_auc", "positive_class": "omega"})
+        self.assertFalse(bad["ok"])
+
+    def test_two_targets_are_both_modelled(self):
+        task = make_task(self.tmp, kind="regression", n_train=500)
+        folder = task.task_md.parent / "data" / "participants"
+        train = pd.read_csv(folder / "train.csv")
+        train["y2"] = -3 * train["y"] + 1
+        train.to_csv(folder / "train.csv", index=False)
+        sample = pd.read_csv(folder / "sample_submission.csv")
+        sample["y2"] = 0.0
+        sample.to_csv(folder / "sample_submission.csv", index=False)
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        out = session.call("set_task", {"target_cols": ["y", "y2"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+        self.assertTrue(out["ok"], out)
+        res = session.call("evaluate", {"model": "lightgbm", **FAST})
+        self.assertEqual(set(res["per_target"]), {"y", "y2"})
+        sub = pd.read_csv(task.task_md.parent / "submission.csv")
+        self.assertLess(abs(np.corrcoef(sub["y"], sub["y2"])[0, 1] + 1), 0.05)  # y2 ≈ -3y: обе модели настоящие
+
+    def test_rmsle_metric_and_nonnegative_predictions(self):
+        task = make_task(self.tmp, kind="regression", n_train=500)
+        folder = task.task_md.parent / "data" / "participants"
+        train = pd.read_csv(folder / "train.csv")
+        train["y"] = np.exp(train["y"] / 2).round(1)
+        train.to_csv(folder / "train.csv", index=False)
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        out = session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "RMSLE"})
+        self.assertEqual(out["metric"], "rmsle")
+        res = session.call("evaluate", {"model": "lightgbm", "target_transform": "log1p", **FAST})
+        self.assertTrue(res["ok"], res)
+        self.assertEqual(res["metric"], "rmsle")
+        sub = pd.read_csv(task.task_md.parent / "submission.csv")
+        self.assertTrue((sub["y"] >= 0).all())
+        self.assertEqual(agent_tools.detect_extra_metric("Метрика — **RMSLE**"), "rmsle")
 
 
 class RobustnessTest(unittest.TestCase):
