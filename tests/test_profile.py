@@ -8,6 +8,7 @@ import pandas as pd
 
 import ml_io
 import ml_profile as mp
+import ml_schema
 from tests.synth import make_task
 
 DATA = Path(__file__).resolve().parent.parent / "data" / "public"
@@ -113,6 +114,26 @@ class SyntheticProfileTest(unittest.TestCase):
     def test_unseen_categories_ignore_int_float_text(self):
         tt = mp.compare_train_test(pd.DataFrame({"c": ["A", "1"]}), pd.DataFrame({"c": [1.0, 1.0]}), ["c"])
         self.assertEqual(tt["unseen_categories_share"], {})
+
+    def test_profile_recomputed_for_a_chosen_schema(self):
+        # просьба Ивана (R3): пересчитать паспорт под таргет, выбранный LLM
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        task = make_task(tmp.name, kind="regression")
+        data = ml_io.load_task(task.task_md)
+        data.train["label"] = (data.train["y"] > data.train["y"].median()).map({True: "hi", False: "lo"})
+        guessed = mp.build_profile(data)
+        self.assertEqual(guessed["schema"]["target_cols"][0], "y")
+        chosen = ml_schema.Schema(("id",), ("label",), tuple(c for c in guessed["schema"]["feature_cols"] if c != "b"))
+        profile = mp.build_profile(data, schema=chosen)
+        self.assertEqual(profile["schema"]["target_cols"], ["label"])
+        self.assertEqual(profile["schema"]["confidence"], "given")
+        self.assertEqual(profile["task"]["type"], "binary")
+        self.assertIn("classes", profile["target"])
+        self.assertNotIn("b", [c["name"] for c in profile["features"]["columns"]])
+        self.assertEqual(ml_schema.resolve_schema(profile["schema"]).target_cols, ("label",))
+        with self.assertRaises(ml_schema.SchemaError):
+            mp.build_profile(data, schema=ml_schema.Schema(("id",), ("nope",), ()))
 
     def test_text_is_short_and_contains_key_facts(self):
         profile = self.profile(kind="multiclass")

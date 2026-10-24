@@ -28,6 +28,7 @@ class EvalResult:
     model: str = ""
     task_type: str = ""
     metric: str = ""
+    metric_source: str = ""          # "explicit" | "profile" | "default" (подставлена ядром)
     higher_is_better: Optional[bool] = None
     score: Optional[float] = None     # среднее по частям валидации
     oof_score: Optional[float] = None  # метрика по всем проверенным строкам сразу
@@ -39,7 +40,7 @@ class EvalResult:
     params: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     error: Optional[str] = None
-    classes: Optional[list] = None
+    classes: Optional[list] = None   # исходные метки классов в порядке столбцов oof_pred (как fit_predict)
     oof_index: Optional[np.ndarray] = None   # позиции строк train, попавшие в проверку
     oof_pred: Optional[np.ndarray] = None    # значения (регрессия) или вероятности (n, K) в порядке oof_index
 
@@ -49,6 +50,7 @@ class EvalResult:
             return None if v is None or not np.isfinite(v) else float(v)
         return {
             "status": self.status, "model": self.model, "task_type": self.task_type, "metric": self.metric,
+            "metric_source": self.metric_source,
             "higher_is_better": self.higher_is_better, "score": num(self.score), "oof_score": num(self.oof_score),
             "fold_scores": [num(s) for s in self.fold_scores], "best_iterations": list(self.best_iterations),
             "train_sizes": list(self.train_sizes),
@@ -96,12 +98,18 @@ def _resolve_task(profile: dict, task_type) -> str:
 
 
 def _resolve_task_and_metric(profile: dict, task_type, metric):
+    """(тип задачи, метрика, откуда метрика: "explicit" | "profile" | "default")."""
     kind = _resolve_task(profile, task_type)
-    name = metric or profile.get("metric", {}).get("primary") or ("rmse" if kind == "regression" else "f1_macro")
+    if metric is not None:
+        name, source = metric, "explicit"
+    elif profile.get("metric", {}).get("primary"):
+        name, source = profile["metric"]["primary"], "profile"
+    else:
+        name, source = ("rmse" if kind == "regression" else "f1_macro"), "default"
     resolved = ml_metrics.get_metric(name)
     if resolved.task != kind:
         raise ValueError(f"метрика {resolved.name!r} относится к задаче {resolved.task}, а задача — {kind}")
-    return kind, resolved
+    return kind, resolved, source
 
 
 def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric: Optional[str] = None,
@@ -117,15 +125,17 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
     считает метрику задачи своей функцией на каждой итерации (дольше, выигрыш не подтверждён)."""
     started = time.time()
     try:
-        kind, resolved = _resolve_task_and_metric(profile, task_type, metric)
+        kind, resolved, metric_source = _resolve_task_and_metric(profile, task_type, metric)
         if target_transform not in TARGET_TRANSFORMS:
             raise ValueError(f"преобразование таргета {target_transform!r} не поддержано: {TARGET_TRANSFORMS}")
         if not isinstance(split.y_train, pd.Series):
             raise ValueError("несколько таргетов пока не поддержаны")
-        base = dict(model=model, task_type=kind, metric=resolved.name,
+        base = dict(model=model, task_type=kind, metric=resolved.name, metric_source=metric_source,
                     higher_is_better=resolved.higher_is_better, params=dict(params or {}))
         X, y = split.X_train, split.y_train
         notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
+        if metric_source == "default":
+            notes.append(f"метрика не передана и не найдена в task.md: взята по умолчанию {resolved.name}")
         positions = np.arange(len(X))  # позиции строк в исходном split.X_train
         if subsample is not None and subsample < 1.0:
             positions = np.sort(np.random.default_rng(seed).choice(len(X), max(2, int(len(X) * subsample)), replace=False))
@@ -182,7 +192,7 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
             oof_score=_score(resolved, truth_all, oof, kind, n_classes),
             fold_scores=[float(s) for s in fold_scores], best_iterations=iterations, train_sizes=sizes,
             seconds=time.time() - started, validation=plan, notes=notes,
-            classes=[str(c) for c in codec.classes_] if codec else None,
+            classes=list(codec.classes_) if codec else None,  # исходные метки, как в fit_predict
             oof_index=positions[index], oof_pred=oof, **base,
         )
     except Exception as error:
@@ -212,36 +222,46 @@ def rounds_from(result: EvalResult, margin: float = 1.15, how: str = "mean") -> 
 
 
 def _auto_rounds(X, target, kind, profile, n_classes, model, params, n_jobs, seed, max_rounds,
-                 learning_rate, time_budget, margin=1.15):
-    """Подобрать число раундов ранней остановкой на каждой части валидации и усреднить (как rounds_from)."""
+                 learning_rate, time_budget, validation=None, margin=1.15):
+    """Подобрать число раундов ранней остановкой на каждой части валидации и усреднить (как rounds_from).
+
+    validation — схема от вызывающего кода (иначе suggest_validation). Сбой одной части не роняет
+    подбор; если не удалась ни одна, поднимается ValueError. Возвращает (раунды, схема, заметки)."""
     started = time.time()
-    plan = ml_validation.suggest_validation(profile, X)
+    plan = dict(validation or ml_validation.suggest_validation(profile, X))
     splits = ml_validation.make_splits(plan, X, target if kind == "classification" else None, seed=seed)
-    iterations = []
+    iterations, notes = [], []
     for number, (tr, va) in enumerate(splits):
         budget = None
         if time_budget is not None:
             remaining = time_budget - (time.time() - started)
             if remaining <= 0 and iterations:
+                notes.append(f"подбор раундов: бюджет исчерпан, посчитано частей {len(iterations)} из {len(splits)}")
                 break
             budget = max(remaining, 0.0) / (len(splits) - number)
-        pre = TabularPreprocessor()
-        boosting = BoostingModel(model, kind, n_classes=n_classes, params=params, n_jobs=n_jobs, seed=seed,
-                                 max_rounds=max_rounds, learning_rate=learning_rate, time_budget=budget)
-        boosting.fit(pre.fit_transform(X.iloc[tr]), target[tr], pre.transform(X.iloc[va]), target[va])
-        iterations.append(boosting.best_iteration_)
-    return max(1, int(round(float(np.mean(iterations)) * margin))), plan["strategy"]
+        try:
+            pre = TabularPreprocessor()
+            boosting = BoostingModel(model, kind, n_classes=n_classes, params=params, n_jobs=n_jobs, seed=seed,
+                                     max_rounds=max_rounds, learning_rate=learning_rate, time_budget=budget)
+            boosting.fit(pre.fit_transform(X.iloc[tr]), target[tr], pre.transform(X.iloc[va]), target[va])
+            iterations.append(boosting.best_iteration_)
+        except Exception as error:  # одна неудачная часть не должна ронять финальное обучение
+            notes.append(f"подбор раундов: часть {number + 1} пропущена: {type(error).__name__}: {error}")
+    if not iterations:
+        raise ValueError("число раундов не подобрано ни на одной части; " + "; ".join(notes[-3:]))
+    return max(1, int(round(float(np.mean(iterations)) * margin))), plan["strategy"], notes
 
 
 def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_rounds: Optional[int] = None,
                 params: Optional[dict] = None, task_type: Optional[str] = None,
                 target_transform: Optional[str] = None, n_jobs: Optional[int] = None, seed: int = 0,
-                time_budget: Optional[float] = None, max_rounds: int = 3000, learning_rate: float = 0.05) -> dict:
+                time_budget: Optional[float] = None, max_rounds: int = 3000, learning_rate: float = 0.05,
+                validation: Optional[dict] = None) -> dict:
     """Обучить на всём train и предсказать test.
 
     n_rounds — число раундов (обычно rounds_from(результат train_eval)). Если не задано, оно
-    подбирается ранней остановкой на одной части валидации; обучать max_rounds без остановки
-    не будем. Регрессия: pred (n,) в исходной шкале таргета. Классификация: proba (n, K)
+    подбирается ранней остановкой по частям валидации (схема validation или suggest_validation);
+    обучать max_rounds без остановки не будем. Регрессия: pred (n,) в исходной шкале таргета. Классификация: proba (n, K)
     и classes — порядок столбцов; pred содержит метки классов (по наибольшей вероятности)."""
     started = time.time()
     try:
@@ -254,9 +274,11 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
         n_classes = len(codec.classes_) if codec else None
         notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
         if n_rounds is None:
-            n_rounds, scheme = _auto_rounds(split.X_train, target, kind, profile, n_classes, model, params,
-                                            n_jobs, seed, max_rounds, learning_rate,
-                                            None if time_budget is None else time_budget / 2)
+            n_rounds, scheme, round_notes = _auto_rounds(
+                split.X_train, target, kind, profile, n_classes, model, params, n_jobs, seed, max_rounds,
+                learning_rate, None if time_budget is None else time_budget / 2, validation=validation,
+            )
+            notes += round_notes
             notes.append(f"n_rounds={n_rounds} подобрано ранней остановкой (схема {scheme})")
         pre = TabularPreprocessor()
         X_tr, X_te = pre.fit_transform(split.X_train), pre.transform(split.X_test)
@@ -268,6 +290,7 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
         boosting.fit(X_tr, target, n_rounds=n_rounds)
         raw = boosting.predict(X_te)
         out = {"status": "ok", "model": model, "task_type": kind, "n_rounds": boosting.best_iteration_,
+               "stopped_by_time": bool(boosting.stopped_by_time_),  # True — обучение прервано по time_budget
                "seconds": time.time() - started, "notes": notes,
                "warnings": list(pre.warnings_) + list(split.warnings)}
         if kind == "regression":

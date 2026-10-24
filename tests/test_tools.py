@@ -226,6 +226,65 @@ class SyntheticToolsTest(unittest.TestCase):
         logged = mt.train_eval(split, profile, metric="mae", target_transform="log1p", **FAST)
         self.assertFalse(any("ранняя остановка" in n for n in logged.notes))  # при log1p — метрика библиотеки
 
+    def test_classes_keep_original_label_types_in_eval_and_fit(self):
+        # просьба Ивана (R6): классы одного типа в train_eval и fit_predict, числовые метки остаются числами
+        split, profile, _ = self.prepare(kind="multiclass", n_train=300)
+        codes = {name: i for i, name in enumerate(sorted(split.y_train.unique()))}
+        split.y_train = split.y_train.map(codes)  # целые метки 0, 1, 2
+        ev = mt.train_eval(split, profile, **FAST)
+        fp = mt.fit_predict(split, profile, n_rounds=20, **FAST)
+        self.assertEqual(ev.classes, fp["classes"])
+        self.assertTrue(all(isinstance(c, (int, np.integer)) for c in ev.classes))
+        self.assertTrue(all(isinstance(c, (int, np.integer)) for c in fp["classes"]))
+
+    def test_fit_predict_reports_stop_by_time(self):
+        # просьба Ивана (R4): понять, что финальное обучение урезано бюджетом, без сравнения числа раундов
+        split, profile, _ = self.prepare(kind="regression", n_train=2000)
+        normal = mt.fit_predict(split, profile, n_rounds=30, **FAST)
+        self.assertIs(normal["stopped_by_time"], False)
+        cut = mt.fit_predict(split, profile, n_rounds=100000, max_rounds=100000, learning_rate=0.01,
+                             n_jobs=2, time_budget=0.3)
+        self.assertEqual(cut["status"], "ok", cut.get("error"))
+        self.assertIs(cut["stopped_by_time"], True)
+        self.assertLess(cut["n_rounds"], 100000)
+
+    def test_default_metric_is_reported_not_silent(self):
+        # просьба Ивана (R1): не подставлять метрику молча
+        split, profile, _ = self.prepare(kind="multiclass", n_train=300)  # в синтетическом task.md метрики нет
+        default = mt.train_eval(split, profile, **FAST)
+        self.assertEqual((default.metric, default.metric_source), ("f1_macro", "default"))
+        self.assertTrue(any("по умолчанию f1_macro" in n for n in default.notes))
+        self.assertEqual(default.to_dict()["metric_source"], "default")
+        explicit = mt.train_eval(split, profile, metric="accuracy", **FAST)
+        self.assertEqual(explicit.metric_source, "explicit")
+        self.assertFalse(any("по умолчанию" in n for n in explicit.notes))
+        from_task = mt.train_eval(split, {**profile, "metric": {**profile["metric"], "primary": "accuracy"}}, **FAST)
+        self.assertEqual(from_task.metric_source, "profile")
+
+    def test_fit_predict_auto_rounds_uses_given_validation_and_survives_failed_parts(self):
+        # просьба Ивана (R5): подбор раундов учитывает переданную схему и не падает из-за одной части
+        split, profile, _ = self.prepare(kind="regression", n_train=600)
+        plan = {"strategy": "kfold", "n_splits": 3, "classification": False}
+        given = mt.fit_predict(split, profile, validation=plan, **FAST)
+        self.assertEqual(given["status"], "ok", given.get("error"))
+        self.assertTrue(any("схема kfold" in n for n in given["notes"]))
+        real_fit, calls = mt.BoostingModel.fit, []
+
+        def flaky(model, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("сбой во второй части")
+            return real_fit(model, *args, **kwargs)
+
+        with mock.patch.object(mt.BoostingModel, "fit", flaky):
+            survived = mt.fit_predict(split, profile, validation=plan, **FAST)
+        self.assertEqual(survived["status"], "ok", survived.get("error"))
+        self.assertTrue(any("часть 2 пропущена" in n for n in survived["notes"]))
+        with mock.patch.object(mt.BoostingModel, "fit", side_effect=RuntimeError("всегда")):
+            failed = mt.fit_predict(split, profile, validation=plan, **FAST)
+        self.assertEqual(failed["status"], "error")
+        self.assertIn("ни на одной части", failed["error"])
+
     def test_fit_predict_rejects_unknown_transform(self):
         split, profile, _ = self.prepare(kind="regression")
         self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")
@@ -240,6 +299,20 @@ class PublicToolsSmokeTest(unittest.TestCase):
         self.assertEqual(result.validation["strategy"], "temporal")
         self.assertEqual(len(result.fold_scores), 3)
         self.assertLess(result.score, float(np.std(split.y_train)))
+
+    def test_xgboost_on_a_hidden_future_year_stays_sane(self):
+        # регрессия: учимся на годах 1–4, проверяем на спрятанном 5-м, где есть новые категории;
+        # до max_cat_to_onehot XGBoost давал RMSE 124–154 при 58.7 у среднего
+        split, profile = prepare(DATA / "regression_case" / "task.md")
+        X, y = split.X_train, split.y_train
+        past, future = (X.Year_Factor < 5).to_numpy(), (X.Year_Factor == 5).to_numpy()
+        hidden = ml_data.SplitData(X[past].reset_index(drop=True), y[past].reset_index(drop=True),
+                                   X[future].reset_index(drop=True), pd.DataFrame(index=range(future.sum())), split.schema)
+        final = mt.fit_predict(hidden, profile, model="xgboost", n_rounds=230, target_transform="log1p", n_jobs=4)
+        truth = y[future].to_numpy(dtype=float)
+        rmse = float(np.sqrt(np.mean((truth - final["pred"]) ** 2)))
+        self.assertLess(rmse, 55.0)
+        self.assertLess(final["pred"].max(), 1000)
 
     def test_multiclass_pipeline_on_a_subsample(self):
         split, profile = prepare(DATA / "multiclass_case" / "task.md")
