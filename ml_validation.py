@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold, KFold, StratifiedGroupKFold, StratifiedKFold
 
-from ml_data import date_days
+from ml_data import date_days, to_dates
 
 STRATEGIES = ("temporal", "group", "stratified", "kfold")
 
@@ -88,8 +88,7 @@ def _time_values(series: pd.Series) -> np.ndarray:
     """Числа как есть, текстовые даты — в днях от 1970-01-01."""
     if pd.api.types.is_numeric_dtype(series):
         return series.to_numpy(dtype=float)
-    parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce", format="mixed")
-    return date_days(parsed).to_numpy(dtype=float)
+    return date_days(to_dates(series)).to_numpy(dtype=float)
 
 
 def _temporal(plan, X):
