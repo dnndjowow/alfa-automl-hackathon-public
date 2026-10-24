@@ -119,7 +119,7 @@ R6, R4, R1, R5, R3 — в `yuri/a02-ml-core`, последний коммит `f
 | `eb7d7f7` | R4 | `fit_predict(...)["stopped_by_time"]`: True, только если обучение действительно прервано по `time_budget` |
 | `463dcf0` | R1 | `EvalResult.metric_source` (и в `to_dict()`): `explicit` / `profile` / `default`; при `default` — заметка в `notes`. Работа не прерывается |
 | `854909b` | R5 | `fit_predict(..., validation=None)`: при `n_rounds=None` подбор раундов идёт по переданной схеме; сбой одной части — заметка, ошибка только если не удалась ни одна |
-| `fe7754d` | R3 | `build_profile(data, schema=None)`: паспорт под выбранные id, таргет и признаки; `schema.confidence = "given"`, `resolve_schema` его принимает |
+| `fe7754d` | R3 | `build_profile(data, schema=None)`: паспорт под выбранные id, таргет и признаки; `profile["schema"]["confidence"] == "given"`, `resolve_schema(profile["schema"])` его принимает |
 
 Проверка: 199 тестов ядра; твои 40 тестов из `tests/test_agent.py` на `b8c4900` с этим ядром проходят; публичные задачи без изменений (RMSE 48.6655, Macro F1 0.6069). Замеры на PC (`67bf296`) остаются в силе: эти правки не меняют обучение.
 
