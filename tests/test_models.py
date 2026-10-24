@@ -243,6 +243,25 @@ class BehaviourTest(unittest.TestCase):
         value = ml_metrics.compute("logloss", y, proba, labels=[0, 1, 2, 3])
         self.assertLess(value, 5.0)
 
+    def test_xgboost_handles_new_categories_one_versus_rest(self):
+        # на спрятанном году регрессии новые категории давали прогнозы до 1576 при реальных 37–200
+        rng = np.random.default_rng(0)
+        n = 3000
+        cats = [f"c{i}" for i in range(40)]
+        effect = dict(zip(cats, rng.normal(scale=3, size=40)))
+        X = pd.DataFrame({"a": rng.normal(size=n), "cat": rng.choice(cats[:30], size=n)})
+        y = X["a"] + X["cat"].map(effect) + rng.normal(scale=0.1, size=n)
+        X["cat"] = pd.Categorical(X["cat"], categories=cats)
+        test = pd.DataFrame({"a": rng.normal(size=500), "cat": pd.Categorical([None] * 500, categories=cats)})
+        m = model("xgboost", "regression", max_rounds=200).fit(X, y)
+        self.assertEqual(m.model_.get_params()["max_cat_to_onehot"], 256)
+        pred = m.predict(test)
+        self.assertTrue(np.isfinite(pred).all())
+        self.assertLess(pred.max(), y.max() + 1)
+        self.assertGreater(pred.min(), y.min() - 1)
+        override = model("xgboost", "regression", max_rounds=20, params={"max_cat_to_onehot": 4}).fit(X, y)
+        self.assertEqual(override.model_.get_params()["max_cat_to_onehot"], 4)
+
     def test_errors(self):
         X, y = make_data("regression")
         with self.assertRaises(ModelError):

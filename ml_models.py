@@ -298,7 +298,11 @@ class BoostingModel:
         params = dict(
             n_estimators=rounds, learning_rate=self.learning_rate, max_depth=7, subsample=0.8,
             colsample_bytree=0.8, min_child_weight=1, reg_lambda=1.0, tree_method="hist",
-            enable_categorical=True, n_jobs=self.n_jobs, random_state=self.seed, verbosity=0,
+            # «категория против остальных» вместо разбиения множества категорий: при разбиении новые
+            # в test категории (у нас — пропуск) уходили в случайную ветку, и на спрятанном году
+            # регрессии прогнозы доходили до 1576 при реальных 37–200 (RMSE 154 против 42 с этой настройкой)
+            enable_categorical=True, max_cat_to_onehot=256,
+            n_jobs=self.n_jobs, random_state=self.seed, verbosity=0,
             callbacks=callbacks or None,
         )
         if Xv is not None:

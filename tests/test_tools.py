@@ -300,6 +300,20 @@ class PublicToolsSmokeTest(unittest.TestCase):
         self.assertEqual(len(result.fold_scores), 3)
         self.assertLess(result.score, float(np.std(split.y_train)))
 
+    def test_xgboost_on_a_hidden_future_year_stays_sane(self):
+        # регрессия: учимся на годах 1–4, проверяем на спрятанном 5-м, где есть новые категории;
+        # до max_cat_to_onehot XGBoost давал RMSE 124–154 при 58.7 у среднего
+        split, profile = prepare(DATA / "regression_case" / "task.md")
+        X, y = split.X_train, split.y_train
+        past, future = (X.Year_Factor < 5).to_numpy(), (X.Year_Factor == 5).to_numpy()
+        hidden = ml_data.SplitData(X[past].reset_index(drop=True), y[past].reset_index(drop=True),
+                                   X[future].reset_index(drop=True), pd.DataFrame(index=range(future.sum())), split.schema)
+        final = mt.fit_predict(hidden, profile, model="xgboost", n_rounds=230, target_transform="log1p", n_jobs=4)
+        truth = y[future].to_numpy(dtype=float)
+        rmse = float(np.sqrt(np.mean((truth - final["pred"]) ** 2)))
+        self.assertLess(rmse, 55.0)
+        self.assertLess(final["pred"].max(), 1000)
+
     def test_multiclass_pipeline_on_a_subsample(self):
         split, profile = prepare(DATA / "multiclass_case" / "task.md")
         result = mt.train_eval(split, profile, subsample=0.2, max_rounds=60, learning_rate=0.2, n_jobs=4)
