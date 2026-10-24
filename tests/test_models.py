@@ -223,6 +223,17 @@ class BehaviourTest(unittest.TestCase):
         m.fit(X.iloc[:200], y[:200], X.iloc[200:], y[200:])
         self.assertEqual(m.predict(X).shape, (300, 3))
 
+    def test_dart_is_removed(self):
+        # наблюдение Ивана: dart отключает раннюю остановку, и часть валидации съедает весь бюджет
+        X, y = make_data("regression")
+        for name, key in (("lightgbm", "boosting_type"), ("xgboost", "booster")):
+            with self.subTest(name):
+                m = model(name, "regression", params={key: "dart"}, max_rounds=200, early_stopping_rounds=5)
+                m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+                self.assertNotIn(key, m.params)
+                self.assertTrue(any("dart" in n for n in m.param_notes_))
+                self.assertLess(m.best_iteration_, 200)
+
     def test_errors(self):
         X, y = make_data("regression")
         with self.assertRaises(ModelError):

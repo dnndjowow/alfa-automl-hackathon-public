@@ -100,6 +100,8 @@ def prepare_params(name: str, task: str, params: Optional[dict]):
     for key, value in dict(params or {}).items():
         if key in _ROUND_PARAMS:
             notes.append(f"параметр {key!r} убран: число раундов и раннюю остановку задаёт код")
+        elif key in ("boosting_type", "boosting", "booster") and str(value).lower() == "dart":
+            notes.append(f"{key}='dart' убран: в этом режиме не работает ранняя остановка и уходит весь бюджет")
         elif name == "catboost" and key in _CATBOOST_DROP:
             notes.append(f"параметр {key!r} не поддерживается CatBoost и убран")
         elif name == "catboost" and key in _CATBOOST_RENAME:
