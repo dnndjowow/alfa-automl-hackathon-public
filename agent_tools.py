@@ -1214,6 +1214,7 @@ class Session:
             elif split.y_train.min() >= 0:
                 pred = np.clip(pred, 0, None)  # неотрицательный таргет: отрицательный прогноз только вредит
             predictions[target] = (pred, fit["proba"], fit["classes"])
+        setup["secondary"] = self._secondary_targets()
         frame, frame_notes = self._assemble(setup, predictions)
         path = write_submission(frame, self.task_dir, len(setup["split"].X_test), setup["schema"].id_cols)
         self.written = {"run_id": run_id, "score": self._score(run_id), "model": run["config"]["model"],
@@ -1223,6 +1224,46 @@ class Session:
                 "run_id": run_id, "cv_score": self._score(run_id),
                 "class_weights": {t: w for t, w in weights_info.items() if w} or None,
                 "notes": notes + frame_notes}
+
+    def _secondary_targets(self) -> dict:
+        """Таргеты из шаблона ответа вне основной постановки (например, другого типа): вместо константы —
+        простая модель LightGBM на тех же признаках; тип по данным. Ошибка -> столбец получит константу."""
+        if "_secondary" in self.setup:
+            return self.setup["_secondary"]
+        out = {}
+        schema = self.setup["schema"]
+        test_cols = set(self.data.test.columns) if self.data.test is not None else set()
+        candidates = [c for c in self._output_columns() if c not in schema.target_cols and c not in schema.id_cols
+                      and c not in test_cols and self.data.train is not None and c in self.data.train.columns]
+        for col in candidates:
+            if self.time_left() < 120:
+                break
+            try:
+                y = self.data.train[col]
+                kind = ml_schema.suggest_task_type(y, "")["type"]
+                if kind not in TASK_TYPES:
+                    continue
+                target_schema = replace(schema, target_cols=(col,))
+                split = ml_data.split_task(self.data, target_schema)
+                profile = copy.deepcopy(self.setup["profile"])
+                profile["task"] = {"type": kind, "ambiguous": False, "notes": ["вторичный таргет"]}
+                result = ml_tools.fit_predict(split, profile, model="lightgbm", task_type=kind, n_jobs=self.n_jobs,
+                                              seed=self.seed, time_budget=min(600.0, self.time_left() / 4))
+                if result.get("status") != "ok":
+                    continue
+                pred = result["pred"]
+                if kind == "regression":
+                    pred = np.asarray(pred, dtype=float)
+                    if float(y.dropna().min()) >= 0:
+                        pred = np.clip(pred, 0, None)
+                else:
+                    pred = _clean_labels(pred)
+                out[col] = pred
+                self.log(f"[secondary] {col}: {kind}, модель LightGBM")
+            except Exception as error:
+                self.log(f"[secondary] {col}: {type(error).__name__}: {_short(error, 150)}")
+        self.setup["_secondary"] = out
+        return out
 
     def _class_weights(self, run_id, target, fit, mode):
         """Веса классов под Macro F1 по OOF-вероятностям; применяются, только если честно помогают."""
@@ -1474,6 +1515,9 @@ class Session:
             elif col in test.columns:
                 frame[col] = test[col].to_numpy()
                 notes.append(f"{col}: скопирован из test")
+            elif col in setup.get("secondary", {}):
+                frame[col] = setup["secondary"][col]
+                notes.append(f"{col}: отдельная модель LightGBM (таргет вне основной постановки)")
             elif train is not None and col in train.columns:
                 values = train[col].dropna()
                 fill = float(values.median()) if pd.api.types.is_numeric_dtype(values) and values.nunique() > 20 \

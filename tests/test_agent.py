@@ -567,6 +567,26 @@ class RowOrderTest(unittest.TestCase):
             self.assertTrue(fin["ok"] or "уже записан" in fin.get("note", ""), fin)
 
 
+class SecondaryTargetTest(unittest.TestCase):
+    def test_second_target_of_other_type_gets_its_own_model(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(tmp, kind="regression", n_train=600)
+            folder = task.task_md.parent / "data" / "participants"
+            train = pd.read_csv(folder / "train.csv")
+            train["flag2"] = (train["a"] > 0).astype(int)
+            train.to_csv(folder / "train.csv", index=False)
+            sample = pd.read_csv(folder / "sample_submission.csv")
+            sample["flag2"] = 0
+            sample.to_csv(folder / "sample_submission.csv", index=False)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            session.call("evaluate", {"model": "lightgbm", **FAST})
+            sub = pd.read_csv(task.task_md.parent / "submission.csv")
+            self.assertTrue(set(sub["flag2"]) == {0, 1})                  # не константа и метки 0/1
+            test = pd.read_csv(folder / "test.csv")
+            self.assertGreater(((test["a"] > 0).astype(int).to_numpy() == sub["flag2"].to_numpy()).mean(), 0.8)
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 
@@ -646,7 +666,7 @@ class RobustnessTest(unittest.TestCase):
         sub = pd.read_csv(task.task_md.parent / "submission.csv")
         self.assertTrue(sub["t"].between(0, 1).all() and sub["t"].nunique() > 2)
 
-    def test_second_target_gets_constant_and_low_confidence_still_gets_safety(self):
+    def test_second_target_gets_own_model_and_low_confidence_still_gets_safety(self):
         task = make_task(self.tmp, kind="regression", n_train=400)
         folder = task.task_md.parent / "data" / "participants"
         train = pd.read_csv(folder / "train.csv")
@@ -661,8 +681,9 @@ class RobustnessTest(unittest.TestCase):
         session.call("evaluate", {"model": "lightgbm", **FAST})
         sub = pd.read_csv(task.task_md.parent / "submission.csv")
         self.assertEqual(list(sub.columns), ["id", "y", "y2"])
-        self.assertEqual(sub["y2"].nunique(), 1)
-        self.assertGreater(sub["y"].nunique(), 1)
+        # второй таргет не в постановке: получает свою модель (раньше — константу), и она осмысленна: y2 = 2y
+        self.assertGreater(sub["y2"].nunique(), 1)
+        self.assertGreater(np.corrcoef(sub["y"], sub["y2"])[0, 1], 0.9)
 
     def test_solution_runs_fallback_when_model_never_calls_tools(self):
         import solution
