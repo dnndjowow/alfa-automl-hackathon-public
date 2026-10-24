@@ -521,6 +521,32 @@ class LoggingTest(unittest.TestCase):
         self.assertIn(b"LLM", raw.getvalue())
 
 
+class EarlyFinishTest(unittest.TestCase):
+    def test_first_early_finish_is_refused_on_large_data_second_accepted(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, session = session_for(tmp, kind="regression", n_train=6000, deadline_s=3600)
+            chat = ScriptedChat([
+                ("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"}),
+                ("evaluate", {"model": "lightgbm", "hypothesis": "база", **FAST}),
+                ("finish", {"reason": "хватит"}),
+                ("finish", {"reason": "точно хватит"}),
+            ])
+            summary = agent_llm.run_agent(session, chat, log=lambda m: None)
+            self.assertEqual(summary["finished"], "точно хватит")
+            refused = [m for m in chat.seen[-1] if m["role"] == "tool" and "Рано останавливаться" in m["content"]]
+            self.assertEqual(len(refused), 1)
+
+    def test_small_data_finish_is_accepted_at_once(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, session = session_for(tmp, kind="regression", n_train=500, deadline_s=3600)
+            chat = ScriptedChat([
+                ("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"}),
+                ("evaluate", {"model": "lightgbm", "hypothesis": "база", **FAST}),
+                ("finish", {"reason": "мало данных"}),
+            ])
+            self.assertEqual(agent_llm.run_agent(session, chat, log=lambda m: None)["finished"], "мало данных")
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 

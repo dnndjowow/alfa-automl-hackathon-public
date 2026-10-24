@@ -220,6 +220,33 @@ def compact(messages: list, session: agent_tools.Session, keep: int = 14, base_f
     return [messages[0], first] + messages[cut:]
 
 
+def too_early(session: agent_tools.Session, total_budget: float, small_rows: int = 5000) -> bool:
+    """Остановка рано: использовано меньше половины бюджета на данных, где перебор не подгоняется под шум."""
+    if session.setup is None or not session._ok_runs(full_only=True):
+        return False
+    if len(session.setup["split"].X_train) < small_rows:
+        return False
+    return session.time_left() > 0.5 * total_budget
+
+
+def early_finish_hint(session: agent_tools.Session, total_budget: float) -> dict:
+    """Ответ на преждевременный finish: сколько времени осталось и что ещё стоит попробовать."""
+    models = {session.runs[r]["config"]["model"] for r in session._ok_runs(full_only=True)}
+    ideas = []
+    missing = [m for m in agent_tools.MODELS if m not in models]
+    if missing:
+        ideas.append(f"evaluate для ещё не пробованных моделей: {missing}")
+    best = session.best_run()
+    if best and session.runs[best]["config"]["model"] != "blend":
+        ideas.append(f"tune для лучшей модели {session.runs[best]['config']['model']} (n_trials 20–40)")
+    ideas.append("add_features по смыслу task.md (отношения, групповые отклонения, частоты, коды как категории)")
+    ideas.append("blend 2–4 лучших разных моделей, затем finalize с seeds=5")
+    minutes = round(session.time_left() / 60)
+    return {"ok": False, "error": f"Рано останавливаться: осталось ~{minutes} мин из {round(total_budget / 60)}. "
+                                  "Используй время для повышения метрики; finish ещё раз — если улучшать нечего.",
+            "ideas": ideas, "best_run_id": best, "best_score": session._score(best) if best else None}
+
+
 def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40, log=print,
               min_time_s: float = 90.0, max_failures: int = 4) -> dict:
     """Диалог с моделью до finish / лимита шагов / времени. Возвращает сводку."""
@@ -230,6 +257,8 @@ def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40,
     if hasattr(chat, "time_left"):
         chat.time_left = session.time_left   # клиент не ждёт ответа дольше, чем осталось времени
     idle = steps = failures = bad_calls = 0
+    total_budget = max(1.0, session.time_left())
+    early_finish_refused = False
     while steps < max_steps and session.finished is None:
         if session.time_left() < min_time_s:
             log("[agent] время на исходе: выходим из диалога")
@@ -282,7 +311,13 @@ def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40,
                 result = {"ok": False, "error": f"аргументы не JSON-объект: {error}"}
             else:
                 log(f"[tool] {call['name']} {json.dumps(args, ensure_ascii=False)[:300]}")
-                result = session.call(call["name"], args)
+                if call["name"] == "finish" and not early_finish_refused and too_early(session, total_budget):
+                    # один раз возвращаем к работе: на больших данных лишнее время почти всегда даёт прирост
+                    early_finish_refused = True
+                    result = early_finish_hint(session, total_budget)
+                    log(f"[agent] finish отклонён: {result['error'][:200]}")
+                else:
+                    result = session.call(call["name"], args)
             bad_calls = 0 if result.get("ok") else bad_calls + 1
             text = json.dumps(result, ensure_ascii=False)
             if native:
