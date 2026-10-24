@@ -21,6 +21,43 @@ class ModelError(ValueError):
     """Неизвестная модель или несовместимые параметры."""
 
 
+# Число раундов и раннюю остановку задаёт код (train_eval подбирает, fit_predict получает n_rounds):
+# синонимы в params роняли бы fit_predict или молча урезали модель.
+_ROUND_PARAMS = {
+    "n_estimators", "num_boost_round", "num_iterations", "num_iteration", "num_trees", "num_tree",
+    "num_round", "num_rounds", "n_iter", "max_iter", "iterations", "max_iterations",
+    "early_stopping", "early_stopping_round", "early_stopping_rounds", "n_iter_no_change", "od_wait", "od_type",
+}
+# CatBoost падает на параметрах LightGBM/XGBoost: известные переводим, остальные убираем
+_CATBOOST_RENAME = {"max_depth": "depth", "colsample_bytree": "rsm", "feature_fraction": "rsm",
+                    "colsample_bylevel": "rsm", "reg_lambda": "l2_leaf_reg", "lambda_l2": "l2_leaf_reg"}
+_CATBOOST_DROP = {"num_leaves", "min_child_samples", "min_data_in_leaf", "min_child_weight", "gamma",
+                  "reg_alpha", "lambda_l1", "subsample_freq", "bagging_freq", "colsample_bynode",
+                  "min_split_gain", "is_unbalance", "max_bin_by_feature"}
+
+
+def prepare_params(name: str, task: str, params: Optional[dict]):
+    """Параметры пользователя для библиотеки name: (чистые params, заметки об изменениях)."""
+    clean, notes = {}, []
+    for key, value in dict(params or {}).items():
+        if key in _ROUND_PARAMS:
+            notes.append(f"параметр {key!r} убран: число раундов и раннюю остановку задаёт код")
+        elif name == "catboost" and key in _CATBOOST_DROP:
+            notes.append(f"параметр {key!r} не поддерживается CatBoost и убран")
+        elif name == "catboost" and key in _CATBOOST_RENAME:
+            clean[_CATBOOST_RENAME[key]] = value
+            notes.append(f"параметр {key!r} для CatBoost передан как {_CATBOOST_RENAME[key]!r}")
+        elif name == "catboost" and key == "class_weight":
+            if task == "classification" and str(value).lower() == "balanced":
+                clean["auto_class_weights"] = "Balanced"
+                notes.append("class_weight='balanced' для CatBoost передан как auto_class_weights='Balanced'")
+            else:
+                notes.append(f"параметр class_weight={value!r} для CatBoost не поддержан и убран")
+        else:
+            clean[key] = value
+    return clean, notes
+
+
 def default_n_jobs() -> int:
     """Потоки по умолчанию: переменная ML_N_JOBS или не больше 8 (лимит платформы)."""
     env = os.environ.get("ML_N_JOBS")
@@ -39,7 +76,7 @@ class BoostingModel:
         if task == "classification" and (n_classes is None or n_classes < 2):
             raise ModelError("для классификации нужно n_classes >= 2")
         self.name, self.task, self.n_classes = name, task, n_classes
-        self.params = dict(params or {})
+        self.params, self.param_notes_ = prepare_params(name, task, params)
         self.n_jobs = n_jobs or default_n_jobs()
         self.seed, self.max_rounds, self.learning_rate = seed, max_rounds, learning_rate
         self.early_stopping_rounds, self.time_budget = early_stopping_rounds, time_budget

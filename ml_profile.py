@@ -16,7 +16,7 @@ import pandas as pd
 
 import ml_io
 import ml_schema
-from ml_data import category_text
+from ml_data import category_text, date_days, parse_dates
 
 _TIME_HINT = re.compile(r"year|date|time|month|week|day|period|quarter|дата|год|месяц|период", re.IGNORECASE)
 _HIGH_CARDINALITY = 50
@@ -53,6 +53,9 @@ def column_kind(series: pd.Series) -> str:
 def profile_column(series: pd.Series) -> dict:
     n_rows = len(series)
     kind = column_kind(series)
+    dates = parse_dates(series) if kind in ("categorical", "binary") else None
+    if dates is not None:
+        kind = "datetime"
     n_unique = int(series.nunique(dropna=True))
     info = {
         "name": str(series.name),
@@ -66,7 +69,11 @@ def profile_column(series: pd.Series) -> dict:
         info.update(
             min=_round(series.min()), max=_round(series.max()), mean=_round(series.mean()),
             std=_round(series.std()), median=_round(series.median()),
+            # целые значения при float-типе: так читается столбец целых чисел с пропусками
+            integer_valued=bool((series.dropna() % 1 == 0).all()),
         )
+    elif kind == "datetime":
+        info.update(min=str(dates.min()), max=str(dates.max()))
     elif kind in ("categorical", "binary"):
         top = series.value_counts(dropna=True).head(5)
         info["top_values"] = [[str(k), _round(v / n_rows)] for k, v in top.items()]
@@ -104,6 +111,16 @@ def compare_train_test(train: pd.DataFrame, test: pd.DataFrame, columns, top=10)
             bn = b.dropna()
             if len(bn) and a.notna().any():
                 below, above = float((bn < a.min()).mean()), float((bn > a.max()).mean())
+                if below + above > 0:
+                    out_of_range[col] = _round(below + above)
+                    side[col] = "above" if below == 0 else "below" if above == 0 else "both"
+        elif parse_dates(a) is not None:
+            # даты сравниваем как время: test позже/раньше train включает временную схему
+            da = date_days(parse_dates(a))
+            db = date_days(pd.to_datetime(b.astype(str).str.strip().where(b.notna()), errors="coerce", format="mixed"))
+            db = db.dropna()
+            if len(db) and da.notna().any():
+                below, above = float((db < da.min()).mean()), float((db > da.max()).mean())
                 if below + above > 0:
                     out_of_range[col] = _round(below + above)
                     side[col] = "above" if below == 0 else "below" if above == 0 else "both"

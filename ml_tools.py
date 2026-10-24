@@ -17,7 +17,7 @@ import pandas as pd
 import ml_metrics
 import ml_validation
 from ml_data import LabelCodec, SplitData, TabularPreprocessor
-from ml_models import BoostingModel
+from ml_models import BoostingModel, prepare_params
 
 TARGET_TRANSFORMS = (None, "log1p")
 
@@ -86,12 +86,17 @@ def _score(metric: ml_metrics.Metric, y_true, pred, task_type: str, n_classes: i
     return metric(y_true, pred, labels=list(range(n_classes)))
 
 
-def _resolve_task_and_metric(profile: dict, task_type, metric):
+def _resolve_task(profile: dict, task_type) -> str:
     kind = task_type or profile.get("task", {}).get("type")
     if kind in ("binary", "multiclass"):
         kind = "classification"
     if kind not in ("regression", "classification"):
         raise ValueError(f"тип задачи {kind!r} пока не поддержан инструментами (нужна регрессия или классификация)")
+    return kind
+
+
+def _resolve_task_and_metric(profile: dict, task_type, metric):
+    kind = _resolve_task(profile, task_type)
     name = metric or profile.get("metric", {}).get("primary") or ("rmse" if kind == "regression" else "f1_macro")
     resolved = ml_metrics.get_metric(name)
     if resolved.task != kind:
@@ -116,7 +121,7 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
         base = dict(model=model, task_type=kind, metric=resolved.name,
                     higher_is_better=resolved.higher_is_better, params=dict(params or {}))
         X, y = split.X_train, split.y_train
-        notes = []
+        notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
         positions = np.arange(len(X))  # позиции строк в исходном split.X_train
         if subsample is not None and subsample < 1.0:
             positions = np.sort(np.random.default_rng(seed).choice(len(X), max(2, int(len(X) * subsample)), replace=False))
@@ -232,14 +237,14 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
     и classes — порядок столбцов; pred содержит метки классов (по наибольшей вероятности)."""
     started = time.time()
     try:
-        kind, _ = _resolve_task_and_metric(profile, task_type, None)
+        kind = _resolve_task(profile, task_type)  # метрика финальному обучению не нужна
         if target_transform not in TARGET_TRANSFORMS:
             raise ValueError(f"преобразование таргета {target_transform!r} не поддержано: {TARGET_TRANSFORMS}")
         if not isinstance(split.y_train, pd.Series):
             raise ValueError("несколько таргетов пока не поддержаны")
         codec, target = _prepare_target(split.y_train, kind, target_transform)
         n_classes = len(codec.classes_) if codec else None
-        notes = []
+        notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
         if n_rounds is None:
             n_rounds, scheme = _auto_rounds(split.X_train, target, kind, profile, n_classes, model, params,
                                             n_jobs, seed, max_rounds, learning_rate,

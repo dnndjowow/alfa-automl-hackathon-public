@@ -82,6 +82,36 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         self.assertIsNone(ml_io.classify_csv("submission.csv"))
         self.assertIsNone(ml_io.classify_csv("weather.csv"))
 
+    def test_more_file_name_variants(self):
+        # ревью Ивана (Y8): training/testing/trainset, submission_example/template не распознавались
+        cases = {"training.csv": "train", "testing.csv": "test", "trainset.csv": "train", "testset.csv": "test",
+                 "submission_example.csv": "sample_submission", "example_submission.csv": "sample_submission",
+                 "submission_template.csv": "sample_submission", "train_labels.csv": "train_labels",
+                 "y_train.csv": "train_labels", "X_train.csv": "train", "test_labels.csv": None}
+        for name, role in cases.items():
+            self.assertEqual(ml_io.classify_csv(name), role, name)
+
+    def test_features_and_labels_in_separate_files(self):
+        # ревью Ивана (Y8): train_labels.csv отбрасывался, таргет терялся
+        by_id = self.write_task({"train_features.csv": "id,x\n1,0.5\n2,1.5\n3,2.5\n",
+                                 "train_labels.csv": "id,y\n3,30\n1,10\n2,20\n",
+                                 "test_features.csv": "id,x\n4,3.5\n"}, "`train_features.csv` `test_features.csv`")
+        data = ml_io.load_task(by_id / "task.md")
+        self.assertEqual(data.train["y"].tolist(), [10, 20, 30])
+        self.assertEqual(data.files.paths["test"].name, "test_features.csv")
+        by_order = self.write_task({"X_train.csv": "a,b\n1,2\n3,4\n", "y_train.csv": "target\n0\n1\n",
+                                    "X_test.csv": "a,b\n5,6\n"}, "")
+        data = ml_io.load_task(by_order / "task.md")
+        self.assertEqual(list(data.train.columns), ["a", "b", "target"])
+        self.assertTrue(any("по порядку" in w for w in data.files.warnings))
+
+    def test_unselected_candidates_are_kept_in_extra(self):
+        root = self.write_task({"train.csv": "id,x,y\n1,2,3\n", "training.csv": "id,x,y\n1,2,3\n",
+                                "test.csv": "id,x\n2,3\n"}, "")
+        files = ml_io.find_task_files(root / "task.md")
+        self.assertEqual(files.paths["train"].name, "train.csv")
+        self.assertEqual([p.name for p in files.extra_csv], ["training.csv"])
+
     def test_substrings_do_not_assign_roles(self):
         # ревью: 'dict' внутри 'predictions', 'sample'+'sub' внутри 'subsample'
         for name in ("predictions.csv", "oof_predictions.csv", "train_predictions.csv", "test_preds.csv"):
@@ -111,6 +141,84 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
             self.assertEqual(len(data.train), 2)
             self.assertEqual(data.files.paths["test"], (root / "data" / "test.csv").resolve())
             self.assertTrue(ml_io.display_path(data.files.paths["train"], data.files.task_dir).endswith("train.csv"))
+
+    def test_codes_with_leading_zeros_keep_train_type_in_test(self):
+        # ревью Ивана (Y14): '00123'/'A77' в train — текст, а в test читались числом 123
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "task.md").write_text("`train.csv` `test.csv`", encoding="utf-8")
+        pd.DataFrame({"id": range(4), "code": ["00123", "A77", "00456", "A77"], "y": range(4)}).to_csv(root / "train.csv", index=False)
+        (root / "test.csv").write_text("id,code\n4,00123\n5,00456\n", encoding="utf-8")
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(data.test["code"].tolist(), ["00123", "00456"])
+        self.assertEqual(data.test["id"].tolist(), [4, 5])  # остальные столбцы как были
+        self.assertTrue(any("как текст" in w for w in data.files.warnings))
+
+    def test_numeric_train_column_is_not_forced_to_text(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "task.md").write_text("`train.csv` `test.csv`", encoding="utf-8")
+        (root / "train.csv").write_text("id,x,y\n1,1.5,0\n2,2.5,1\n", encoding="utf-8")
+        (root / "test.csv").write_text("id,x\n3,oops\n", encoding="utf-8")
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(data.train["x"].dtype, float)
+        self.assertFalse(any("как текст" in w for w in data.files.warnings))
+
+    def test_existing_submission_referenced_in_task_md_is_ignored(self):
+        # ревью Ивана (Y15): после первого запуска рядом лежит submission.csv, и было ложное предупреждение
+        task, root = self.make(kind="regression")
+        text = task.task_md.read_text(encoding="utf-8")
+        self.assertIn("`submission.csv`", text)
+        (root / "submission.csv").write_text("id,y\n1,2\n", encoding="utf-8")
+        files = ml_io.find_task_files(task.task_md)
+        self.assertEqual(files.warnings, [])
+        self.assertEqual(files.extra_csv, [])
+
+    def write_task(self, files, text="`train.csv` `test.csv`"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "task.md").write_text(text, encoding="utf-8")
+        for name, content in files.items():
+            (root / name).write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+        return root
+
+    def test_numbers_with_missing_markers_become_numeric(self):
+        # ревью Ивана (Y1): «NA», «?», «null» превращали числовой признак в категорию, а таргет ломали
+        rows = ["id,x,y,country"] + [f"{i},{i * 0.5},{i * 2},{'NA' if i % 3 else 'RU'}" for i in range(40)]
+        rows[5] = "4,NA,8,RU"
+        rows[6] = "5,?,null,RU"
+        rows[7] = "6, ,12,RU"
+        root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,x,country\n100,1.5,NA\n101,NA,RU\n"})
+        data = ml_io.load_task(root / "task.md")
+        self.assertTrue(pd.api.types.is_float_dtype(data.train["x"]))
+        self.assertTrue(pd.api.types.is_float_dtype(data.train["y"]))
+        self.assertEqual(int(data.train["x"].isna().sum()), 3)
+        self.assertTrue(pd.isna(data.train.loc[5, "y"]))
+        self.assertTrue(pd.isna(data.test.loc[1, "x"]))
+        self.assertEqual(set(data.train["country"]), {"NA", "RU"})  # настоящая категория «NA» не тронута
+        self.assertTrue(any("переведены в числа" in w for w in data.files.warnings))
+
+    def test_mostly_text_column_is_not_converted(self):
+        rows = ["id,code,y"] + [f"{i},{'A' + str(i) if i % 2 else str(i)},{i}" for i in range(20)]
+        data = ml_io.load_task(self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,code\n50,A3\n"}) / "task.md")
+        self.assertFalse(pd.api.types.is_numeric_dtype(data.train["code"]))
+
+    def test_semicolon_separator_cp1251_and_tsv(self):
+        # ревью Ивана (Y9): «;» читался одним столбцом, cp1251 падал, .tsv не искался
+        root = self.write_task({"train.csv": "id;x;y\n1;2;3\n2;3;4\n", "test.csv": "id;x\n3;4\n"})
+        self.assertEqual(list(ml_io.load_task(root / "task.md").train.columns), ["id", "x", "y"])
+        root = self.write_task({"train.csv": "id,город,y\n1,Москва,3\n2,Тула,4\n".encode("cp1251"),
+                                "test.csv": "id,город\n3,Москва\n".encode("cp1251")})
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(list(data.train.columns), ["id", "город", "y"])
+        self.assertEqual(data.train.loc[0, "город"], "Москва")
+        root = self.write_task({"train.tsv": "id\tx\ty\n1\t2\t3\n", "test.tsv": "id\tx\n3\t4\n"}, "`train.tsv` `test.tsv`")
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(list(data.train.columns), ["id", "x", "y"])
+        self.assertEqual(data.files.paths["test"].name, "test.tsv")
 
     def test_only_empty_cell_is_missing(self):
         tmp = tempfile.TemporaryDirectory()

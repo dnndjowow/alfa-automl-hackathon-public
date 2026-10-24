@@ -194,6 +194,25 @@ class SyntheticToolsTest(unittest.TestCase):
         self.assertLess(final["n_rounds"], 3000)
         self.assertTrue(any("подобрано" in n for n in final["notes"]))
 
+    def test_fit_predict_does_not_depend_on_the_metric_in_profile(self):
+        # ревью Ивана (R2): rmse первой в task.md + task_type=classification -> fit_predict падал
+        split, profile, _ = self.prepare(kind="multiclass", n_train=300)
+        wrong = {**profile, "metric": {**profile["metric"], "primary": "rmse"}}
+        final = mt.fit_predict(split, wrong, task_type="classification", n_rounds=20, **FAST)
+        self.assertEqual(final["status"], "ok", final.get("error"))
+        self.assertEqual(final["proba"].shape[1], 3)
+
+    def test_params_from_llm_do_not_break_final_fit(self):
+        # ревью Ивана (Y6): train_eval проходил, а fit_predict падал или обучал урезанную модель
+        split, profile, _ = self.prepare(kind="regression", n_train=300)
+        for params in ({"early_stopping_round": 10}, {"num_trees": 40}):
+            ev = mt.train_eval(split, profile, params=params, **FAST)
+            fp = mt.fit_predict(split, profile, params=params, n_rounds=70, **FAST)
+            self.assertEqual((ev.status, fp["status"]), ("ok", "ok"), (ev.error, fp.get("error")))
+            self.assertEqual(fp["n_rounds"], 70)
+            self.assertTrue(any("убран" in n for n in ev.notes))
+            self.assertTrue(any("убран" in n for n in fp["notes"]))
+
     def test_fit_predict_rejects_unknown_transform(self):
         split, profile, _ = self.prepare(kind="regression")
         self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass, field
 from typing import Optional, Union
 
@@ -109,6 +110,36 @@ def category_text(series: pd.Series) -> pd.Series:
     return text.str.replace(r"^(-?\d+)\.0$", r"\1", regex=True)
 
 
+_ISO_DATE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$")
+_ANY_DATE = re.compile(r"^(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$")
+_DATE_SHARE = 0.95
+_EPOCH = pd.Timestamp("1970-01-01")
+DATE_PARTS = ("days", "year", "month", "dayofweek")
+
+
+def parse_dates(series: pd.Series) -> Optional[pd.Series]:
+    """Дата-время из текстового столбца, если не меньше 95% непустых значений похожи на даты и разбираются;
+    иначе None. Числа датами не считаются."""
+    if pd.api.types.is_numeric_dtype(series) or pd.api.types.is_bool_dtype(series):
+        return None
+    text = series.dropna().astype(str).str.strip()
+    if text.empty:
+        return None
+    iso = text.str.match(_ISO_DATE).mean() >= _DATE_SHARE
+    if not iso and text.str.match(_ANY_DATE).mean() < _DATE_SHARE:
+        return None
+    values = series.astype(str).str.strip().where(series.notna())
+    parsed = pd.to_datetime(values, errors="coerce", format="ISO8601" if iso else "mixed")
+    if getattr(parsed.dt, "tz", None) is not None:
+        parsed = parsed.dt.tz_convert(None)
+    return parsed if parsed[series.notna()].notna().mean() >= _DATE_SHARE else None
+
+
+def date_days(parsed: pd.Series) -> pd.Series:
+    """Дни от 1970-01-01 (дробные) — числовое представление даты для порядка и границ."""
+    return (parsed - _EPOCH) / pd.Timedelta(days=1)
+
+
 class TabularPreprocessor:
     """Приводит признаки к виду для градиентного бустинга.
 
@@ -116,6 +147,7 @@ class TabularPreprocessor:
     типы, словари категорий). Числа остаются с пропусками (LightGBM, XGBoost и
     CatBoost умеют с ними работать), ±inf заменяется на NaN. Категории кодируются по
     словарю из fit(); значения, которых там не было, превращаются в пропуск.
+    Текстовые даты становятся числами: <столбец>__days (дни от 1970-01-01), __year, __month, __dayofweek.
     """
 
     def __init__(self, drop_constant: bool = True):
@@ -124,7 +156,7 @@ class TabularPreprocessor:
     def fit(self, X: pd.DataFrame) -> "TabularPreprocessor":
         if not isinstance(X, pd.DataFrame) or X.shape[1] == 0:
             raise DataError("ожидается таблица хотя бы с одним признаком")
-        self.numeric_cols_, self.categorical_cols_ = [], []
+        self.numeric_cols_, self.categorical_cols_, self.datetime_cols_ = [], [], []
         self.categories_, self.dropped_, self.warnings_ = {}, {}, []
         for col in X.columns:
             s = X[col]
@@ -135,12 +167,18 @@ class TabularPreprocessor:
                 self.dropped_[col] = "constant"
             elif pd.api.types.is_numeric_dtype(s) or pd.api.types.is_bool_dtype(s):
                 self.numeric_cols_.append(col)
+            elif parse_dates(s) is not None:
+                self.datetime_cols_.append(col)
             else:
                 counts = category_text(s).dropna().value_counts()
                 order = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
                 self.categories_[col] = [k for k, _ in order]
                 self.categorical_cols_.append(col)
-        self.feature_names_ = [c for c in X.columns if c not in self.dropped_]
+        self.input_cols_ = [c for c in X.columns if c not in self.dropped_]
+        self.feature_names_ = [
+            name for c in self.input_cols_
+            for name in ([f"{c}__{part}" for part in DATE_PARTS] if c in self.datetime_cols_ else [c])
+        ]
         if not self.feature_names_:
             raise DataError("после удаления пустых и константных столбцов признаков не осталось")
         return self
@@ -155,13 +193,22 @@ class TabularPreprocessor:
         self.warnings_ = []
         self.unseen_share_ = {}
         out = {}
-        for col in self.feature_names_:
+        for col in self.input_cols_:
             if col not in X.columns:
                 self.warnings_.append(f"в данных нет признака {col!r}: заполнен пропусками")
                 values = pd.Series(np.nan, index=X.index)
             else:
                 values = X[col]
-            if col in self.categorical_cols_:
+            if col in self.datetime_cols_:
+                parsed = pd.to_datetime(values.astype(str).str.strip().where(values.notna()),
+                                        errors="coerce", format="mixed")
+                if getattr(parsed.dt, "tz", None) is not None:
+                    parsed = parsed.dt.tz_convert(None)
+                out[f"{col}__days"] = date_days(parsed).astype("float64")
+                out[f"{col}__year"] = parsed.dt.year.astype("float64")
+                out[f"{col}__month"] = parsed.dt.month.astype("float64")
+                out[f"{col}__dayofweek"] = parsed.dt.dayofweek.astype("float64")
+            elif col in self.categorical_cols_:
                 present = values.notna()
                 text = category_text(values)
                 cat = pd.Categorical(text, categories=self.categories_[col])

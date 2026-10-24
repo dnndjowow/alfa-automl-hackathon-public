@@ -144,6 +144,19 @@ class RoleOverlapTest(unittest.TestCase):
         schema = ms.resolve_schema(suggestion)
         self.assertEqual((schema.id_cols, schema.target_cols), (("id",), ("y",)))
 
+    def test_id_found_when_sample_rows_are_in_another_order(self):
+        # ревью Ивана (Y13): при другом порядке строк client_id попадал в таргеты
+        rng = np.random.default_rng(0)
+        train = pd.DataFrame({"client_id": range(100, 160), "x": rng.normal(size=60), "y": rng.normal(size=60)})
+        test = pd.DataFrame({"client_id": range(200, 220), "x": rng.normal(size=20)})
+        sample = pd.DataFrame({"client_id": test["client_id"][::-1].to_numpy(), "y": 0.0})
+        suggestion = ms.infer_schema(train, test, sample)
+        self.assertEqual((suggestion["id_cols"], suggestion["target_cols"]), (["client_id"], ["y"]))
+        self.assertIn(suggestion["confidence"], ("high", "medium"))
+        self.assertTrue(any("порядок" in n for n in suggestion["notes"]))
+        by_name = ms.infer_schema(train, test)
+        self.assertEqual(by_name["id_cols"], ["client_id"])
+
     def test_resolve_refuses_overlapping_roles(self):
         train = pd.DataFrame({"id": [1, 2, 3], "x": [1, 2, 3], "y": [5, 6, 7]})
         test = pd.DataFrame({"id": [4, 5], "x": [1, 2]})
@@ -153,6 +166,50 @@ class RoleOverlapTest(unittest.TestCase):
 
 
 class MetricMentionTest(unittest.TestCase):
+    def test_primary_metric_before_or_after_the_phrase(self):
+        # ревью Ивана (Y2): метрика искалась только после фразы «основная метрика»
+        cases = {
+            "Macro F1 — основная метрика соревнования. Accuracy приводится для справки.": "f1_macro",
+            "MAE является основной метрикой; RMSE выводится для справки.": "mae",
+            "Решения ранжируются по ROC AUC (основная метрика). Также считаем logloss.": "roc_auc",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(ms.mentioned_metrics(text)["primary"], expected, text)
+
+    def test_metric_spellings(self):
+        # ревью Ивана (Y3): написания macro F1, PR-AUC, бинарный F1, R^2
+        cases = {
+            "Основная метрика: macro-averaged F1. Accuracy тоже считаем.": "f1_macro",
+            "Метрика — F1-score (macro). Также смотрим accuracy.": "f1_macro",
+            "Основная метрика — F1-мера (macro).": "f1_macro",
+            "Основная метрика — PR-AUC (average precision).": "average_precision",
+            "Метрика — R^2.": "r2",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(ms.mentioned_metrics(text)["primary"], expected, text)
+        plain = ms.mentioned_metrics("Основная метрика: F1-score.")
+        self.assertEqual((plain["primary"], plain["supported"], plain["higher_is_better"]), ("f1", False, True))
+        self.assertEqual(ms.metric_family("f1"), "classification")
+
+    def test_metrics_outside_the_registry_are_named_not_replaced(self):
+        # N1: при основной RMSLE/MAPE ядро возвращало «первую упомянутую» RMSE/MAE
+        cases = {
+            "RMSLE — основная метрика соревнования. RMSE приводится для справки.": "rmsle",
+            "Основная метрика — RMSE между логарифмами прогноза и ответа.": "rmsle",
+            "MAPE является основной метрикой; MAE выводится для справки.": "mape",
+            "Основная метрика: symmetric mean absolute percentage error.": "smape",
+            "Основная метрика: mean squared log error. MSE для справки.": "msle",
+        }
+        for text, expected in cases.items():
+            found = ms.mentioned_metrics(text)
+            self.assertEqual((found["primary"], found["supported"], found["higher_is_better"]),
+                             (expected, False, False), text)
+            self.assertEqual(ms.metric_family(expected), "regression")
+
+    def test_sklearn_call_with_macro_average_is_one_mention(self):
+        found = ms.mentioned_metrics('f1_score(y_true, y_pred, average="macro")')
+        self.assertEqual(found["mentioned"], ["f1_macro"])
+
     def test_balanced_accuracy_before_primary_accuracy(self):
         # ревью: замена текста сдвигала позиции, и основной выбиралась balanced_accuracy
         found = ms.mentioned_metrics("Дополнительно balanced accuracy. Основная метрика — accuracy.")

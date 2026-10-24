@@ -28,6 +28,10 @@ class ColumnProfileTest(unittest.TestCase):
         cat = mp.profile_column(pd.Series(["a", "a", "b", "c"], name="c"))
         self.assertEqual(cat["top_values"][0], ["a", 0.5])
 
+    def test_integer_valued_flag(self):
+        self.assertTrue(mp.profile_column(pd.Series([1.0, 2.0, None, 4.0], name="y"))["integer_valued"])
+        self.assertFalse(mp.profile_column(pd.Series([1.5, 2.0, 3.0], name="z"))["integer_valued"])
+
     def test_id_like(self):
         ids = mp.profile_column(pd.Series(range(200), name="row"))
         self.assertTrue(ids.get("id_like"))
@@ -96,6 +100,15 @@ class SyntheticProfileTest(unittest.TestCase):
         test = pd.DataFrame({"t": [8, 9], "u": [0, -1], "w": [0, 9]})
         tt = mp.compare_train_test(train, test, ["t", "u", "w"])
         self.assertEqual(tt["out_of_train_range_side"], {"t": "above", "u": "below", "w": "both"})
+
+    def test_dates_are_profiled_and_compared_as_time(self):
+        train = pd.DataFrame({"d": pd.date_range("2020-01-01", periods=60).strftime("%Y-%m-%d")})
+        test = pd.DataFrame({"d": pd.date_range("2020-06-01", periods=10).strftime("%Y-%m-%d")})
+        info = mp.profile_column(train["d"])
+        self.assertEqual(info["kind"], "datetime")
+        tt = mp.compare_train_test(train, test, ["d"])
+        self.assertEqual((tt["out_of_train_range_share"]["d"], tt["out_of_train_range_side"]["d"]), (1.0, "above"))
+        self.assertEqual(tt["unseen_categories_share"], {})
 
     def test_unseen_categories_ignore_int_float_text(self):
         tt = mp.compare_train_test(pd.DataFrame({"c": ["A", "1"]}), pd.DataFrame({"c": [1.0, 1.0]}), ["c"])

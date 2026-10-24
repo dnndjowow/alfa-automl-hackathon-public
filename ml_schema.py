@@ -20,21 +20,47 @@ _DEFAULT_INT_CLASSES = 20   # целый таргет с не более чем 
 _MAX_INT_CLASSES = 200      # до этого порога целый таргет допускает оба прочтения
 _CLS_WORDS = re.compile(r"классификац|classif", re.IGNORECASE)
 _REG_WORDS = re.compile(r"регресс|regress", re.IGNORECASE)
-_ID_NAME = re.compile(r"id|index|row_?id|uid", re.IGNORECASE)
+_ID_NAME = re.compile(r"id|index|row_?id|uid|\w+_id", re.IGNORECASE)
 
+def _f1_variant(kind: str) -> str:
+    """macro F1 во всех встреченных написаниях: «macro F1», «macro-averaged F1», «F1-score (macro)», «F1-мера macro»."""
+    return (rf"f1_score\s*\([^)]*average\s*=\s*[\"']{kind}[\"']\s*\)"
+            rf"|{kind}[\s_-]*(?:averaged[\s_-]+)?f1"
+            rf"|f1(?:[\s_-]*(?:score|мера))?[\s_-]*\(?\s*{kind}"
+            rf"|average\s*=\s*[\"']{kind}[\"']")
+
+
+# Если совпадения пересекаются, остаётся самое длинное: «accuracy» внутри «balanced accuracy»,
+# «auc» внутри «PR-AUC» и «F1» внутри «macro F1» отдельными метриками не считаются.
 _METRIC_PATTERNS = {
     "rmse": r"\brmse\b|root mean squared error",
     "mse": r"\bmse\b",
     "mae": r"\bmae\b",
-    "r2": r"\br2\b|r²|r-squared",
+    "r2": r"\br\^?2\b|r²|r-squared|coefficient of determination",
     "accuracy": r"\baccuracy\b",
     "balanced_accuracy": r"balanced[\s_-]*accuracy",
-    "f1_macro": r"macro[\s_-]*f1|f1[\s_-]*macro|average\s*=\s*[\"']macro[\"']",
-    "f1_weighted": r"weighted[\s_-]*f1|f1[\s_-]*weighted",
-    "f1_micro": r"micro[\s_-]*f1|f1[\s_-]*micro",
+    "f1_macro": _f1_variant("macro"),
+    "f1_weighted": _f1_variant("weighted"),
+    "f1_micro": _f1_variant("micro"),
+    "f1": r"\bf1(?:[\s_-]*(?:score|мера))?\b",
     "logloss": r"log[\s_-]*loss|cross[\s_-]*entropy",
+    "rmsle": r"\brmsle\b|root mean squared log\w*(?: error)?|rmse\s+(?:между\s+|of\s+(?:the\s+)?)(?:log|логарифм)\w*",
+    "msle": r"\bmsle\b|mean squared log\w* error",
+    "mape": r"\bmape\b|mean absolute percentage(?: error)?",
+    "smape": r"\bsmape\b|symmetric mean absolute(?: percentage)?(?: error)?",
+    "average_precision": r"pr[\s_-]*auc|auc[\s_-]*pr\b|average[\s_-]+precision",
     "roc_auc": r"roc[\s_-]*auc|\bauc\b",
 }
+# Метрики, которые распознаются, но не считаются ядром: бинарному F1 нужен выбор положительного
+# класса, RMSLE/MSLE/MAPE/SMAPE считает агент. Их всё равно надо называть основными, а не подменять.
+_UNSUPPORTED = {
+    "f1": {"task": "classification", "higher_is_better": True},
+    "rmsle": {"task": "regression", "higher_is_better": False},
+    "msle": {"task": "regression", "higher_is_better": False},
+    "mape": {"task": "regression", "higher_is_better": False},
+    "smape": {"task": "regression", "higher_is_better": False},
+}
+_SENTENCE_END = re.compile(r"[.;!?]|\n\s*\n")
 _PRIMARY_PHRASE = re.compile(
     r"основн\w*\s+метрик|метрик\w*\s+оценк|метрика\s*[—:-]|primary\s+metric|main\s+metric"
     r"|evaluation\s+metric|scoring\s+metric",
@@ -69,14 +95,17 @@ def infer_schema(train, test=None, sample_submission=None, dictionary=None) -> d
 
     id_cols = []
     if sample_submission is not None and test is not None and len(sample_submission) == len(test):
-        # id уникален и не помечен словарём как таргет (заглушка таргета в test тоже может совпасть)
+        # id уникален, не помечен словарём как таргет (заглушка таргета в test тоже может совпасть)
+        # и содержит те же значения, что в test; порядок строк в шаблоне может отличаться
         id_cols = [
             c for c in sample_submission.columns
             if c in test.columns and roles.get(c) != "target" and test[c].is_unique
-            and np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy())
+            and set(sample_submission[c].astype(str)) == set(test[c].astype(str))
         ]
         if id_cols:
             sources["id"] = "значения sample_submission совпадают с test"
+            if not all(np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy()) for c in id_cols):
+                notes.append("порядок строк sample_submission отличается от test")
     if not id_cols:
         id_cols = [c for c, r in roles.items() if r == "id" and c in train_cols]
         if id_cols:
@@ -188,9 +217,8 @@ def suggest_task_type(y: Optional[pd.Series], text: str = "", metric: Optional[s
 
     evidence, source = None, None
     if metric:
-        try:
-            evidence, source = ml_metrics.get_metric(metric).task, f"метрика {metric}"
-        except ml_metrics.MetricError:
+        evidence, source = metric_family(metric), f"метрика {metric}"
+        if evidence is None:
             notes.append(f"метрика {metric!r} неизвестна, тип по ней не определить")
     if evidence is None:
         evidence, source = _text_hint(text), "текст задачи"
@@ -209,30 +237,72 @@ def suggest_task_type(y: Optional[pd.Series], text: str = "", metric: Optional[s
     return {"type": kind, "ambiguous": True, "notes": notes}
 
 
+def metric_family(name: Optional[str]) -> Optional[str]:
+    """regression / classification для метрики из реестра или из распознаваемых без поддержки."""
+    if not name:
+        return None
+    if name in _UNSUPPORTED:
+        return _UNSUPPORTED[name]["task"]
+    try:
+        return ml_metrics.get_metric(name).task
+    except ml_metrics.MetricError:
+        return None
+
+
+def _metric_hits(clean: str) -> list:
+    """(start, end, name) для всех упоминаний метрик; из пересекающихся остаётся самое длинное."""
+    found = [(m.start(), m.end(), name)
+             for name, pattern in _METRIC_PATTERNS.items()
+             for m in re.finditer(pattern, clean, flags=re.IGNORECASE)]
+    kept = []
+    for hit in sorted(found, key=lambda h: (-(h[1] - h[0]), h[0])):
+        if all(hit[1] <= k[0] or hit[0] >= k[1] for k in kept):
+            kept.append(hit)
+    return sorted(kept)
+
+
+def _sentence(clean: str, start: int, end: int):
+    """Границы предложения вокруг [start, end): по . ; ! ? и пустой строке."""
+    left = 0
+    for m in _SENTENCE_END.finditer(clean, 0, start):
+        left = m.end()
+    right_match = _SENTENCE_END.search(clean, end)
+    return left, right_match.start() if right_match else len(clean)
+
+
 def mentioned_metrics(text: str) -> dict:
-    """Метрики из task.md. primary — по фразам вроде «основная метрика», иначе первое упоминание."""
+    """Метрики из task.md.
+
+    primary — метрика, ближайшая к фразе вроде «основная метрика» в том же предложении,
+    до или после неё; без такой фразы — первое упоминание. supported=False значит, что метрика
+    распознана, но ядро её не считает (например, бинарный F1 без выбранного положительного класса).
+    """
     clean = text.replace("*", "").replace("`", "")
-    balanced = [m.span() for m in re.finditer(_METRIC_PATTERNS["balanced_accuracy"], clean, flags=re.IGNORECASE)]
-    hits = []
-    for name, pattern in _METRIC_PATTERNS.items():
-        for m in re.finditer(pattern, clean, flags=re.IGNORECASE):
-            if name == "accuracy" and any(a <= m.start() < b for a, b in balanced):
-                continue  # «accuracy» внутри «balanced accuracy» — не отдельная метрика
-            hits.append((m.start(), name))
-    hits.sort()
-    mentioned = list(dict.fromkeys(name for _, name in hits))
+    hits = _metric_hits(clean)
+    mentioned = list(dict.fromkeys(name for _, _, name in hits))
     primary, source = None, None
     for phrase in _PRIMARY_PHRASE.finditer(clean):
-        near = [name for pos, name in hits if 0 <= pos - phrase.end() <= 150]
-        if near:
-            primary, source = near[0], "фраза об основной метрике"
+        left, right = _sentence(clean, phrase.start(), phrase.end())
+        candidates = []
+        for start, end, name in hits:
+            if start < left or end > right:
+                continue
+            if start >= phrase.end():
+                distance = start - phrase.end()
+            elif end <= phrase.start():
+                distance = phrase.start() - end
+            else:
+                distance = 0
+            candidates.append((distance, start < phrase.start(), name))  # при равенстве — после фразы
+        if candidates:
+            primary, source = min(candidates)[2], "фраза об основной метрике"
             break
     if primary is None and mentioned:
         primary, source = mentioned[0], "первое упоминание"
-    metric = ml_metrics.get_metric(primary) if primary else None
-    return {
-        "primary": primary,
-        "mentioned": mentioned,
-        "higher_is_better": metric.higher_is_better if metric else None,
-        "source": source,
-    }
+    supported, higher = True, None
+    if primary in _UNSUPPORTED:
+        supported, higher = False, _UNSUPPORTED[primary]["higher_is_better"]
+    elif primary:
+        higher = ml_metrics.get_metric(primary).higher_is_better
+    return {"primary": primary, "mentioned": mentioned, "higher_is_better": higher,
+            "supported": supported, "source": source}

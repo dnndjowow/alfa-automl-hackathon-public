@@ -18,7 +18,11 @@ import pandas as pd
 
 ROLES = ("train", "test", "sample_submission", "data_dictionary")
 
-_CSV_REF = re.compile(r"`([^`\n]+?\.csv)`", re.IGNORECASE)
+_CSV_REF = re.compile(r"`([^`\n]+?\.(?:csv|tsv))`", re.IGNORECASE)
+_TABLE_SUFFIXES = (".csv", ".tsv")
+# метки пропуска, которые встречаются в числовых столбцах чужих датасетов
+_MISSING_TOKENS = {"na", "n/a", "nan", "null", "none", "?", "-", "--", "#n/a"}
+_NUMERIC_SHARE = 0.95
 _SKIP_DIRS = {"__pycache__", "node_modules", "venv", "site-packages"}
 _MAX_DEPTH = 4
 
@@ -32,6 +36,7 @@ class TaskFiles:
     task_md: Path
     task_dir: Path
     paths: dict = field(default_factory=dict)  # роль -> Path | None
+    train_labels: Optional[Path] = None        # метки train отдельным файлом (train_labels.csv, y_train.csv)
     extra_csv: list = field(default_factory=list)
     warnings: list = field(default_factory=list)
 
@@ -59,24 +64,33 @@ _OUTPUT_TOKENS = {"pred", "preds", "prediction", "predictions", "submission", "o
 _DICT_TOKENS = {"dict", "dictionary", "description", "descriptions"}
 
 
+_TRAIN_TOKENS = {"train", "training", "trainset"}
+_TEST_TOKENS = {"test", "testing", "testset"}
+_LABEL_TOKENS = {"label", "labels", "target", "targets", "y"}
+_TEMPLATE_TOKENS = {"sample", "example", "template"}
+
+
 def classify_csv(path) -> Optional[str]:
     """Роль файла по словам в имени; None, если имя не распознано (в том числе submission.csv).
 
     Сравниваются целые слова, а не подстроки: predictions.csv не словарь, train_subsample.csv
     не sample_submission. Файлы с признаками выходных данных (pred, oof, output) роли не получают.
+    Шаблон ответа — слово submission рядом с sample / example / template. Метки train отдельным
+    файлом (train_labels.csv, y_train.csv) получают роль "train_labels".
     """
     tokens = [t for t in re.split(r"[^a-z0-9]+", Path(path).stem.lower()) if t]
-    if "sample" in tokens and any(t.startswith("sub") for t in tokens):
+    words = set(tokens)
+    if any(t.startswith("sub") for t in tokens) and _TEMPLATE_TOKENS & words:
         return "sample_submission"
     if "".join(tokens) in ("samplesubmission", "samplesub"):
         return "sample_submission"
-    if _OUTPUT_TOKENS & set(tokens):
+    if _OUTPUT_TOKENS & words:
         return None
-    if _DICT_TOKENS & set(tokens):
+    if _DICT_TOKENS & words:
         return "data_dictionary"
-    if "train" in tokens:
-        return "train"
-    if "test" in tokens:
+    if _TRAIN_TOKENS & words:
+        return "train_labels" if _LABEL_TOKENS & words else "train"
+    if _TEST_TOKENS & words and not _LABEL_TOKENS & words:
         return "test"
     return None
 
@@ -114,7 +128,7 @@ def _walk_csv(root: Path):
             d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
         ) if depth < _MAX_DEPTH else []
         for name in sorted(filenames):
-            if name.lower().endswith(".csv"):
+            if name.lower().endswith(_TABLE_SUFFIXES):
                 yield (Path(dirpath) / name).resolve()
 
 
@@ -124,53 +138,159 @@ def find_task_files(task_md) -> TaskFiles:
     files = TaskFiles(task_md=task_md, task_dir=task_dir, paths={role: None for role in ROLES})
     refs = referenced_csv_paths(read_task_text(task_md), task_dir)
 
-    candidates = {role: [] for role in ROLES}
+    candidates = {role: [] for role in ROLES + ("train_labels",)}
+    # task.md обычно упоминает и будущий submission.csv: это наш ответ, а не входной файл
+    refs = [p for p in refs if p.name.lower() != "submission.csv"]
+    unrecognised = []
     for path in refs:
         role = classify_csv(path)
         if role:
             candidates[role].append(path)
-        elif path not in files.extra_csv:
-            files.extra_csv.append(path)
+        elif path not in unrecognised:
+            unrecognised.append(path)
 
-    missing = {role for role in ROLES if not candidates[role]}
+    missing = {role for role, found in candidates.items() if not found}
     for path in _walk_csv(task_dir):
         role = classify_csv(path)
         if role in missing:
             candidates[role].append(path)
         elif role is None and path not in refs and path.name.lower() != "submission.csv":
-            if path not in files.extra_csv:
-                files.extra_csv.append(path)
+            if path not in unrecognised:
+                unrecognised.append(path)
 
     for role, options in candidates.items():
         if not options:
-            files.warnings.append(f"файл роли {role!r} не найден")
+            if role != "train_labels":
+                files.warnings.append(f"файл роли {role!r} не найден")
             continue
         options = sorted(options, key=lambda p: _rank(p, task_dir))
-        files.paths[role] = options[0]
+        if role == "train_labels":
+            files.train_labels = options[0]
+        else:
+            files.paths[role] = options[0]
         if len(options) > 1:
             files.warnings.append(
-                f"для роли {role!r} несколько файлов, выбран {display_path(options[0], task_dir)}"
+                f"для роли {role!r} несколько файлов, выбран {display_path(options[0], task_dir)}; "
+                "остальные — в extra_csv"
             )
-    for path in files.extra_csv:
+            files.extra_csv.extend(p for p in options[1:] if p not in files.extra_csv)
+    for path in unrecognised:
+        files.extra_csv.append(path)
         files.warnings.append(f"роль файла {display_path(path, task_dir)} не распознана")
     return files
 
 
-def read_csv(path) -> pd.DataFrame:
-    """CSV по правилам кейса: UTF-8, запятая, точка; пропуск — только пустая ячейка.
+def _attach_labels(data: "TaskData") -> None:
+    """Присоединить метки из отдельного файла к train: по общим столбцам (id) или по порядку строк."""
+    files = data.files
+    labels = read_csv(files.train_labels)
+    name = display_path(files.train_labels, files.task_dir)
+    common = [c for c in labels.columns if c in data.train.columns]
+    new = [c for c in labels.columns if c not in data.train.columns]
+    if not new:
+        files.warnings.append(f"в {name} нет новых столбцов: метки не присоединены")
+    elif common and not labels[common].duplicated().any() and not data.train[common].duplicated().any():
+        data.train = data.train.merge(labels[common + new], on=common, how="left")
+        files.warnings.append(f"метки {new} из {name} присоединены к train по {common}")
+    elif len(labels) == len(data.train):
+        data.train = pd.concat([data.train.reset_index(drop=True), labels[new].reset_index(drop=True)], axis=1)
+        files.warnings.append(f"метки {new} из {name} присоединены к train по порядку строк")
+    else:
+        files.warnings.append(f"метки из {name} не удалось сопоставить с train: файл в extra_csv")
+        files.extra_csv.append(files.train_labels)
 
-    Строки вроде «NA», «None», «null» остаются значениями (это могут быть категории).
+
+def read_csv(path, text_columns=()) -> pd.DataFrame:
+    """Таблица по правилам кейса: UTF-8, запятая, точка; пропуск — пустая ячейка.
+
+    Запасные варианты для чужих файлов: кодировка cp1251, если UTF-8 не читается; .tsv — табуляция;
+    если всё прочиталось одним столбцом с «;» или табуляцией в заголовке — разделитель определяется
+    автоматически. text_columns читаются как текст без преобразования в числа (коды «00123»).
     """
-    return pd.read_csv(
-        path, encoding="utf-8-sig", keep_default_na=False, na_values=[""], low_memory=False
-    )
+    path = Path(path)
+    options = dict(keep_default_na=False, na_values=[""], dtype={c: str for c in text_columns} or None)
+    sep = "\t" if path.suffix.lower() == ".tsv" else ","
+    frame, encoding = None, None
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            frame = pd.read_csv(path, sep=sep, encoding=encoding, low_memory=False, **options)
+            break
+        except UnicodeDecodeError:
+            continue
+    if frame is None:
+        raise TaskLoadError(f"{path.name}: не удалось прочитать ни в UTF-8, ни в cp1251")
+    if frame.shape[1] == 1 and any(mark in str(frame.columns[0]) for mark in (";", "\t", "|")):
+        frame = pd.read_csv(path, sep=None, engine="python", encoding=encoding, **options)
+    return frame
+
+
+def numeric_text_columns(frame: pd.DataFrame) -> list:
+    """Текстовые столбцы, которые на самом деле числовые: не меньше 95% непустых значений —
+    числа, остальное — метки пропуска («NA», «?», «null», пробелы) или единичный мусор."""
+    found = []
+    for col in frame.columns:
+        values = frame[col]
+        if pd.api.types.is_numeric_dtype(values) or pd.api.types.is_bool_dtype(values):
+            continue
+        text = values.dropna().astype(str).str.strip()
+        rest = text[~(text.eq("") | text.str.lower().isin(_MISSING_TOKENS))]
+        if len(rest) and pd.to_numeric(rest, errors="coerce").notna().mean() >= _NUMERIC_SHARE:
+            found.append(col)
+    return found
+
+
+def _to_numeric(values: pd.Series) -> pd.Series:
+    text = values.astype(str).str.strip().where(values.notna())
+    missing = text.isna() | text.eq("") | text.str.lower().isin(_MISSING_TOKENS)
+    return pd.to_numeric(text.where(~missing), errors="coerce")
+
+
+def _coerce(frame: pd.DataFrame, columns) -> pd.DataFrame:
+    frame = frame.copy()
+    for col in columns:
+        if col in frame.columns and not pd.api.types.is_numeric_dtype(frame[col]):
+            frame[col] = _to_numeric(frame[col])
+    return frame
 
 
 def load_task(task_md) -> TaskData:
-    """Найти и прочитать все распознанные файлы задачи. Отсутствующие роли остаются None."""
+    """Найти и прочитать все распознанные файлы задачи. Отсутствующие роли остаются None.
+
+    Типы столбцов задаёт train:
+    - столбец, который почти весь из чисел и лишь местами содержит «NA», «?», «null» или пробелы,
+      переводится в числа (в train и test), а такие метки становятся пропусками. По условию кейса
+      пропуск — пустая ячейка; правило касается только явно числовых столбцов, текстовые
+      категории (в том числе значение «NA») не трогаются;
+    - если в train столбец текстовый, а в test он прочитался бы числами («00123» -> 123),
+      test перечитывается с этим столбцом как текстом.
+    """
     files = find_task_files(task_md)
     data = TaskData(files=files, text=read_task_text(files.task_md))
     for role, path in files.paths.items():
         if path is not None:
             setattr(data, role, read_csv(path))
+    if data.train is None:
+        return data
+    if files.train_labels is not None:
+        _attach_labels(data)
+    numeric = numeric_text_columns(data.train)
+    if data.test is not None:
+        numeric += [c for c in data.test.columns
+                    if c in data.train.columns and c not in numeric
+                    and pd.api.types.is_numeric_dtype(data.train[c])
+                    and not pd.api.types.is_numeric_dtype(data.test[c])]
+    if numeric:
+        data.train = _coerce(data.train, numeric)
+        files.warnings.append(f"столбцы {numeric} переведены в числа: метки вроде 'NA', '?', 'null' — пропуски")
+    if data.test is not None:
+        text_in_train = [
+            c for c in data.test.columns
+            if c in data.train.columns
+            and not pd.api.types.is_numeric_dtype(data.train[c])
+            and pd.api.types.is_numeric_dtype(data.test[c])
+        ]
+        if text_in_train:
+            data.test = read_csv(files.paths["test"], text_columns=text_in_train)
+            files.warnings.append(f"столбцы {text_in_train} в test прочитаны как текст, как в train")
+        data.test = _coerce(data.test, numeric)
     return data
