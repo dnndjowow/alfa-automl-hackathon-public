@@ -213,6 +213,19 @@ class SyntheticToolsTest(unittest.TestCase):
             self.assertTrue(any("убран" in n for n in ev.notes))
             self.assertTrue(any("убран" in n for n in fp["notes"]))
 
+    def test_train_eval_reports_the_stopping_metric(self):
+        split, profile, _ = self.prepare(kind="multiclass", n_train=400)
+        default = mt.train_eval(split, profile, metric="f1_macro", **FAST)
+        self.assertTrue(any("custom_stopping=True" in n for n in default.notes), default.notes)
+        result = mt.train_eval(split, profile, metric="f1_macro", custom_stopping=True, **FAST)
+        self.assertTrue(any("ранняя остановка по f1_macro" in n for n in result.notes), result.notes)
+        native = mt.train_eval(split, profile, metric="accuracy", **FAST)
+        self.assertTrue(any("ранняя остановка по multi_error" in n for n in native.notes), native.notes)
+        split, profile, _ = self.prepare(kind="regression", n_train=300)
+        split.y_train = split.y_train - split.y_train.min() + 1
+        logged = mt.train_eval(split, profile, metric="mae", target_transform="log1p", **FAST)
+        self.assertFalse(any("ранняя остановка" in n for n in logged.notes))  # при log1p — метрика библиотеки
+
     def test_fit_predict_rejects_unknown_transform(self):
         split, profile, _ = self.prepare(kind="regression")
         self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")

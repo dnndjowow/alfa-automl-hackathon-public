@@ -109,8 +109,12 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
                task_type: Optional[str] = None, target_transform: Optional[str] = None,
                n_jobs: Optional[int] = None, seed: int = 0, time_budget: Optional[float] = None,
                max_rounds: int = 3000, learning_rate: float = 0.05, subsample: Optional[float] = None,
-               ) -> EvalResult:
-    """Оценить модель на валидации. Данные в каждой части готовятся только по её train-строкам."""
+               custom_stopping: bool = False) -> EvalResult:
+    """Оценить модель на валидации. Данные в каждой части готовятся только по её train-строкам.
+
+    Ранняя остановка идёт по метрике задачи, если у библиотеки есть такая встроенная (MAE, accuracy,
+    AUC, у CatBoost и Macro F1); иначе — по метрике библиотеки. custom_stopping=True для таких метрик
+    считает метрику задачи своей функцией на каждой итерации (дольше, выигрыш не подтверждён)."""
     started = time.time()
     try:
         kind, resolved = _resolve_task_and_metric(profile, task_type, metric)
@@ -149,8 +153,12 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
                 boosting = BoostingModel(
                     model, kind, n_classes=n_classes or None, params=params, n_jobs=n_jobs, seed=seed,
                     max_rounds=max_rounds, learning_rate=learning_rate, time_budget=budget,
+                    # при log1p модель видит таргет в другой шкале: метрика задачи там не годится
+                    eval_metric=None if target_transform else resolved, custom_eval=custom_stopping,
                 )
                 boosting.fit(X_tr, target[tr], X_va, target[va])
+                if number == 1 and boosting.eval_note_:
+                    notes.append(boosting.eval_note_)
                 raw = boosting.predict(X_va)
                 truth = target[va] if kind == "classification" else y.to_numpy(dtype=float)[va]
                 pred = _inverse(raw, kind, target_transform)

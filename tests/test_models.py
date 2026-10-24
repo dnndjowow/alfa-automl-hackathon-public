@@ -174,6 +174,55 @@ class BehaviourTest(unittest.TestCase):
         self.assertEqual(m.params, {"depth": 4, "rsm": 0.8, "auto_class_weights": "Balanced", "l2_leaf_reg": 2.0})
         self.assertEqual(len(m.param_notes_), 7)
 
+    def test_early_stopping_follows_the_task_metric(self):
+        # наблюдение Ивана: остановка шла по метрике библиотеки (logloss, l2), а не по метрике задачи
+        X, y = make_data("classification", k=3, n=600)
+        expected = {"lightgbm": "f1_macro", "xgboost": "task_metric", "catboost": "TotalF1:average=Macro"}
+        for name in ("lightgbm", "xgboost", "catboost"):
+            with self.subTest(name):
+                m = model(name, "classification", n_classes=3, eval_metric="f1_macro", max_rounds=200, custom_eval=True)
+                m.fit(X.iloc[:400], y[:400], X.iloc[400:], y[400:])
+                self.assertIn("f1_macro" if name != "catboost" else "по TotalF1", m.eval_note_)
+                if name == "lightgbm":
+                    logged = m.model_.evals_result_["valid_0"]
+                elif name == "xgboost":
+                    logged = m.model_.evals_result()["validation_0"]
+                else:
+                    logged = m.model_.get_evals_result()["validation"]
+                self.assertIn(expected[name], logged)
+
+    def test_custom_stopping_is_off_by_default(self):
+        X, y = make_data("classification", k=3, n=400)
+        for name in ("lightgbm", "xgboost"):
+            with self.subTest(name):
+                m = model(name, "classification", n_classes=3, eval_metric="f1_macro", max_rounds=100)
+                m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+                self.assertIn("custom_stopping=True", m.eval_note_)
+                self.assertIsNone(m._stop_custom)
+        m = model("catboost", "classification", n_classes=3, eval_metric="f1_macro", max_rounds=50)
+        m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+        self.assertIn("TotalF1", m.eval_note_)  # у CatBoost встроенная — работает и без флага
+
+    def test_native_metrics_and_approximations(self):
+        X, y = make_data("regression", n=400)
+        m = model("lightgbm", "regression", eval_metric="mae", max_rounds=100).fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+        self.assertIn("l1", m.model_.evals_result_["valid_0"])
+        Xc, yc = make_data("classification", k=3, n=400)
+        m = model("lightgbm", "classification", n_classes=3, eval_metric="roc_auc", max_rounds=50)
+        m.fit(Xc.iloc[:300], yc[:300], Xc.iloc[300:], yc[300:])
+        self.assertIn("приближение", m.eval_note_)
+        m = model("catboost", "classification", n_classes=3, eval_metric="balanced_accuracy", max_rounds=30)
+        m.fit(Xc.iloc[:300], yc[:300], Xc.iloc[300:], yc[300:])
+        self.assertIn("по умолчанию", m.eval_note_)
+
+    def test_failing_custom_metric_does_not_crash_training(self):
+        X, y = make_data("classification", k=3, n=300)
+        broken = ml_metrics.Metric("broken", lambda yt, yp, labels: (_ for _ in ()).throw(ml_metrics.MetricError("x")), True,
+                           "classification", "labels")
+        m = model("lightgbm", "classification", n_classes=3, eval_metric=broken, max_rounds=50, custom_eval=True)
+        m.fit(X.iloc[:200], y[:200], X.iloc[200:], y[200:])
+        self.assertEqual(m.predict(X).shape, (300, 3))
+
     def test_errors(self):
         X, y = make_data("regression")
         with self.assertRaises(ModelError):
