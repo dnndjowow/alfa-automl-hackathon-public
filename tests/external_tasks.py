@@ -7,7 +7,8 @@ data_dictionary. Скрытые ответы test лежат отдельно (d
 сплит, неподдержанную метрику, целый таргет регрессии, маленькие данные, плоскую раскладку.
 
   python tests/external_tasks.py build             # скачать и собрать задачи
-  python tests/external_tasks.py run [имя ...]     # запустить solution.py и оценить по скрытым ответам
+  python tests/external_tasks.py run [имя ...]     # запустить solution.py без LLM и оценить по скрытым ответам
+  python tests/external_tasks.py run --llm [имя]   # то же с настоящей LLM (тратит общий бюджет ключа)
 
 Данные и ответы в Git не попадают (data/ в .gitignore). Нужен интернет для первой загрузки.
 """
@@ -345,7 +346,8 @@ def run(names, time_limit):
     for name in names:
         task_dir = OUT / name
         (task_dir / "submission.csv").unlink(missing_ok=True)
-        env = dict(os.environ, AGENT_TIME_LIMIT=str(time_limit), AGENT_SAFETY_S=str(min(300, time_limit // 4)))
+        env = dict(os.environ, AGENT_TIME_LIMIT=str(time_limit), AGENT_SAFETY_S=str(min(300, time_limit // 4)),
+                   AGENT_LLM="on" if USE_LLM else "off")
         started = time.time()
         with open(task_dir / "run.log", "w", encoding="utf-8") as log:
             code = subprocess.run([sys.executable, "-W", "ignore", str(ROOT / "solution.py"), "task.md"],
@@ -359,9 +361,12 @@ def run(names, time_limit):
     return pd.DataFrame(rows)
 
 
+USE_LLM = "--llm" in sys.argv   # по умолчанию без LLM: прогоны не тратят общий бюджет ключа
+
 if __name__ == "__main__":
-    command = sys.argv[1] if len(sys.argv) > 1 else "run"
-    selected = sys.argv[2:] or list(BUILDERS)
+    argv = [a for a in sys.argv if a != "--llm"]
+    command = argv[1] if len(argv) > 1 else "run"
+    selected = argv[2:] or list(BUILDERS)
     if command == "build":
         for name in selected:
             BUILDERS[name]()

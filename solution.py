@@ -8,7 +8,8 @@
   OPENAI_API_KEY, OPENAI_BASE_URL, OPENAI_MODEL — выданная модель (обязательны для агента);
   AGENT_TIME_LIMIT — общий лимит секунд (по умолчанию 10800 = 3 часа платформы);
   AGENT_SAFETY_S — запас до лимита на запись ответа и выход (по умолчанию 900);
-  AGENT_MAX_STEPS — максимум шагов диалога с моделью (по умолчанию 40).
+  AGENT_MAX_STEPS — максимум шагов диалога с моделью (по умолчанию 40);
+  AGENT_LLM=off — не обращаться к LLM (офлайн-проверки, чтобы не тратить общий бюджет ключа).
 """
 
 from __future__ import annotations
@@ -104,9 +105,48 @@ def improve(session) -> None:
         last = time.monotonic() - started
         if not result.get("ok"):
             log(f"[fallback] evaluate {step['model']}: {result.get('error')}")
+    blend(session)
+    best = session.best_run()
+    if best and session.runs[best]["config"]["model"] == "blend":
+        best_single = min(session.runs[best]["config"]["members"], key=lambda m: _rank(session, m))
+    else:
+        best_single = best
+    if best_single:
+        config = session.runs[best_single]["config"]
+        reserve = session.estimate_final_seconds(best or best_single, 3) + 300
+        budget = 0.6 * (session.time_left() - reserve)
+        if budget > 120:
+            result = session.call("tune", {"model": config["model"], "n_trials": 40, "time_budget_s": budget,
+                                           "target_transform": config["target_transform"], "hypothesis": "fallback"})
+            log(f"[fallback] tune {config['model']}: ok={result.get('ok')} trials={result.get('trials')} "
+                f"best={result.get('best', {}).get('score')}")
+            blend(session)
+
+
+def _rank(session, run_id):
+    score = session._score(run_id)
+    return -score if session.setup["higher_is_better"] else score
+
+
+def blend(session) -> None:
     if len(session._ok_runs(full_only=True)) >= 2:
         result = session.call("blend", {"reason": "fallback"})
         log(f"[fallback] blend: ok={result.get('ok')} {result.get('error', '')}")
+
+
+def polish(session) -> None:
+    """Если время осталось: записанный лучший запуск переобучить средним по нескольким сидам."""
+    written = session.written or {}
+    run_id = written.get("run_id")
+    if not run_id or run_id not in session.runs:
+        return
+    for seeds in (5, 4, 3, 2):
+        if seeds <= written.get("seeds", 1):
+            return
+        if session.estimate_final_seconds(run_id, seeds) <= 0.7 * session.time_left():
+            result = session.call("finalize", {"run_id": run_id, "seeds": seeds})
+            log(f"[polish] {run_id} x{seeds} сидов: ok={result.get('ok')} {result.get('error', '')}")
+            return
 
 
 def metric_family(metric):
@@ -163,6 +203,8 @@ def main(argv) -> int:
     session.write_constant()
 
     try:
+        if os.environ.get("AGENT_LLM", "on").lower() == "off":
+            raise agent_llm.LLMUnavailable("AGENT_LLM=off: LLM отключена для офлайн-проверки", fatal=True)
         chat = agent_llm.OpenAIChat()
         log(f"модель {chat.model}")
         summary = agent_llm.run_agent(session, chat, max_steps=int(os.environ.get("AGENT_MAX_STEPS", 40)), log=log)
@@ -176,6 +218,7 @@ def main(argv) -> int:
         log("[agent] обученной модели нет: запасная политика")
         guarded(fallback_policy, session)
     guarded(ensure_final, session)
+    guarded(polish, session)
     if not submission.exists():
         log("submission.csv не создан")
         return 1

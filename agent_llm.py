@@ -32,11 +32,14 @@ SYSTEM_PROMPT = """Ты — автономный ML-инженер. Решаеш
 4. Когда есть 2–4 удачных запуска разных моделей на одной схеме, вызови blend: смесь по OOF обычно
    лучше любой одиночной модели. Лучший запуск или смесь обучи на всём train через finalize (он запишет
    submission.csv). Первый удачный запуск код записывает сам — это страховка, улучшай её.
-5. Вызови finish с причиной, когда прирост мал, время на исходе или идеи исчерпаны.
-   Остановиться после нескольких экспериментов нормально; бесконечный перебор — нет.
+5. Цель — максимальная метрика на скрытом test. Используй бюджет времени: пока time_left_s больше
+   примерно трёх полных экспериментов плюс финала, продолжай улучшать — tune для лучшей модели,
+   другие модели, log1p, смесь. Вызывай finish, когда время на исходе или три попытки подряд не
+   улучшили лучший результат. Финал лучшего запуска или смеси делай с seeds=3–5, если хватает времени.
 
 Следи за time_left_s в ответах инструментов: финальное обучение занимает примерно время одной
-части валидации с запасом. Шаги диалога платные: обычно хватает 5–10 вызовов. Отвечай кратко;
+части валидации с запасом. Шаги диалога платные: не повторяй одинаковых запусков, крупный перебор
+делай одним вызовом tune. Отвечай кратко;
 каждое сообщение должно содержать вызов инструмента."""
 
 TEXT_FORMAT = ('Вызов инструмента пиши одним JSON-объектом без пояснений вокруг: '
@@ -221,7 +224,7 @@ def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40,
     base_first = messages[1]
     if hasattr(chat, "time_left"):
         chat.time_left = session.time_left   # клиент не ждёт ответа дольше, чем осталось времени
-    idle = steps = failures = 0
+    idle = steps = failures = bad_calls = 0
     while steps < max_steps and session.finished is None:
         if session.time_left() < min_time_s:
             log("[agent] время на исходе: выходим из диалога")
@@ -275,9 +278,18 @@ def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40,
             else:
                 log(f"[tool] {call['name']} {json.dumps(args, ensure_ascii=False)[:300]}")
                 result = session.call(call["name"], args)
+            bad_calls = 0 if result.get("ok") else bad_calls + 1
             text = json.dumps(result, ensure_ascii=False)
             if native:
                 messages.append({"role": "tool", "tool_call_id": call["id"], "content": text})
             else:
                 messages.append({"role": "user", "content": f"Результат {call['name']}: {text}"})
+        if bad_calls >= 8:
+            log("[agent] восемь неудачных вызовов подряд: модель зациклилась, завершаем диалог")
+            break
+        if bad_calls >= 4:
+            # модель повторяет ошибку: напоминаем точную схему аргументов
+            messages.append({"role": "user", "content": "Последние вызовы не удались. Используй ровно эти имена "
+                             "аргументов: " + json.dumps({sp["name"]: list(sp["parameters"]["properties"])
+                                                         for sp in agent_tools.TOOL_SPECS}, ensure_ascii=False)})
     return {"steps": steps, "finished": session.finished, "usage": getattr(chat, "usage", None)}

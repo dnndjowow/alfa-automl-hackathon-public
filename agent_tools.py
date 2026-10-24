@@ -9,6 +9,7 @@ Session хранит состояние одного запуска: данны�
 from __future__ import annotations
 
 import copy
+import inspect
 import json
 import math
 import os
@@ -48,6 +49,8 @@ _RESERVED_PARAMS = {
 # CatBoost не понимает типичные параметры LightGBM/XGBoost: переводим или отбрасываем
 _CATBOOST_RENAME = {"max_depth": "depth", "colsample_bytree": "rsm", "feature_fraction": "rsm",
                     "colsample_bylevel": "rsm", "reg_lambda": "l2_leaf_reg", "lambda_l2": "l2_leaf_reg"}
+# XGBoost молча игнорирует эти параметры («Parameters: { class_weight } are not used»): LLM должна это видеть
+_XGBOOST_DROP = {"class_weight", "is_unbalance", "auto_class_weights", "num_leaves", "min_child_samples"}
 _CATBOOST_DROP = {"num_leaves", "min_child_samples", "min_data_in_leaf", "min_child_weight", "gamma",
                   "reg_alpha", "lambda_l1", "class_weight", "subsample_freq", "bagging_freq", "max_bin_by_feature"}
 _VALIDATION_KEYS = ("strategy", "n_splits", "column", "direction")
@@ -234,6 +237,51 @@ def guess_positive_class(classes, y: pd.Series, text: str):
     return min(classes, key=lambda c: counts.get(c, 0))
 
 
+def _suggest_params(trial, model: str):
+    """Пространство поиска гиперпараметров для Optuna: (params, learning_rate)."""
+    lr = trial.suggest_float("learning_rate", 0.015, 0.15, log=True)
+    if model == "lightgbm":
+        params = {"num_leaves": trial.suggest_int("num_leaves", 15, 255, log=True),
+                  "min_child_samples": trial.suggest_int("min_child_samples", 5, 200, log=True),
+                  "colsample_bytree": trial.suggest_float("colsample_bytree", 0.3, 1.0),
+                  "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+                  "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 30.0, log=True),
+                  "min_split_gain": trial.suggest_float("min_split_gain", 1e-4, 1.0, log=True)}
+    elif model == "xgboost":
+        params = {"max_depth": trial.suggest_int("max_depth", 3, 12),
+                  "min_child_weight": trial.suggest_float("min_child_weight", 0.5, 30.0, log=True),
+                  "colsample_bytree": trial.suggest_float("colsample_bytree", 0.3, 1.0),
+                  "subsample": trial.suggest_float("subsample", 0.5, 1.0),
+                  "reg_lambda": trial.suggest_float("reg_lambda", 1e-3, 30.0, log=True)}
+    else:
+        params = {"depth": trial.suggest_int("depth", 4, 10),
+                  "l2_leaf_reg": trial.suggest_float("l2_leaf_reg", 0.5, 30.0, log=True),
+                  "rsm": trial.suggest_float("rsm", 0.4, 1.0),
+                  "random_strength": trial.suggest_float("random_strength", 0.1, 10.0, log=True)}
+    if trial.number == 0:
+        params = {}   # первая попытка — параметры по умолчанию
+    return params, lr
+
+
+def _fit_args(method, args: dict):
+    """Аргументы от LLM к сигнатуре инструмента: «n_trials-» -> n_trials, «hypothesisary» -> hypothesis
+    (по префиксу), незнакомые ключи отбрасываются и возвращаются списком, а не роняют вызов."""
+    names = list(inspect.signature(method).parameters)
+    fitted, ignored = {}, []
+    for key, value in args.items():
+        norm = re.sub(r"[^a-z0-9_]", "", str(key).lower()).strip("_")
+        if norm in names:
+            target = norm
+        else:
+            close = [n for n in names if len(norm) >= 4 and (norm.startswith(n) or n.startswith(norm))]
+            target = max(close, key=len) if len(close) >= 1 else None
+        if target is None or target in fitted:
+            ignored.append(str(key))
+        else:
+            fitted[target] = value
+    return fitted, ignored
+
+
 def _simplex_grid(k: int, steps: int) -> list:
     """Все веса k моделей с шагом 1/steps, сумма которых равна 1."""
     def rec(left, parts):
@@ -316,20 +364,22 @@ class Session:
     def time_left(self) -> float:
         return self.deadline - time.monotonic()
 
-    def estimate_final_seconds(self, run_id) -> float:
-        """Сколько займёт финальное обучение: время одной части валидации с запасом на весь train."""
+    def estimate_final_seconds(self, run_id, seeds: int = 1) -> float:
+        """Сколько займёт финальное обучение: время одной части валидации с запасом на весь train,
+        умноженное на число ещё не обученных сидов."""
         run = self.runs[run_id]
-        if run_id in self._fits:
-            return 0.0
         if run["config"]["model"] == "blend":
-            return sum(self.estimate_final_seconds(m) for m in run["config"]["members"])
+            return sum(self.estimate_final_seconds(m, seeds) for m in run["config"]["members"])
+        missing = sum(1 for k in range(seeds) if (run_id, k) not in self._fits)
+        if not missing:
+            return 0.0
         result = run["result"]
         folds = max(1, len(result.get("fold_scores") or []))
         per_fold = result.get("seconds", 60.0) / folds / (run["config"]["subsample"] or 1.0)
-        return 1.6 * per_fold + 30.0
+        return missing * (1.6 * per_fold + 30.0)
 
-    def can_finalize(self, run_id) -> bool:
-        return self.estimate_final_seconds(run_id) <= self.time_left() + self.final_slack
+    def can_finalize(self, run_id, seeds: int = 1) -> bool:
+        return self.estimate_final_seconds(run_id, seeds) <= self.time_left() + self.final_slack
 
     # ---- обзор задачи -------------------------------------------------------
     def overview(self, max_columns: int = 60) -> dict:
@@ -386,6 +436,7 @@ class Session:
         elif not isinstance(args, dict):
             out = {"ok": False, "error": "аргументы должны быть JSON-объектом"}
         else:
+            args, ignored = _fit_args(method, args)
             try:
                 out = method(**args)
             except TypeError as error:
@@ -393,6 +444,9 @@ class Session:
             except Exception as error:  # инструмент не должен ронять агента
                 out = {"ok": False, "error": f"{type(error).__name__}: {_short(error)}",
                        "trace": _short(traceback.format_exc(limit=2))}
+            if ignored:
+                out["ignored_args"] = ignored
+                out["accepted_args"] = [p for p in inspect.signature(method).parameters]
         out["time_left_s"] = round(self.time_left())
         self.history.append({"tool": name, "args": args, "ok": out.get("ok"),
                              "seconds": round(time.monotonic() - started, 1)})
@@ -575,21 +629,80 @@ class Session:
             out["early_submission"] = {k: early.get(k) for k in ("ok", "run_id", "error", "rows")}
         return out
 
-    def tool_finalize(self, run_id=None, class_weights="auto", reason=""):
-        """Обучить выбранный запуск на всём train и записать submission.csv (если он лучше записанного)."""
+    def tool_finalize(self, run_id=None, class_weights="auto", seeds=1, reason=""):
+        """Обучить выбранный запуск на всём train и записать submission.csv (если он лучше записанного).
+        seeds > 1 — среднее нескольких обучений с разными сидами (меньше разброс предсказаний)."""
         if self.setup is None:
             return {"ok": False, "error": "сначала вызовите set_task"}
+        try:
+            seeds = max(1, min(10, int(seeds)))
+        except (TypeError, ValueError):
+            seeds = 1
         run_id = run_id or self.best_run()
         if run_id not in self.runs or self.runs[run_id]["result"]["status"] != "ok":
             return {"ok": False, "error": f"нет успешного запуска {run_id!r}; успешные: {self._ok_runs()}"}
-        if (self.written or {}).get("run_id") == run_id:
-            return {"ok": True, "note": "этот запуск уже записан", "written": self.written}
+        written = self.written or {}
+        if written.get("run_id") == run_id:
+            if seeds <= written.get("seeds", 1):
+                return {"ok": True, "note": "этот запуск уже записан", "written": self.written}
+            if not self.can_finalize(run_id, seeds):
+                return {"ok": False, "error": f"не хватит времени на {seeds} сидов"}
+            return self._finalize(run_id, class_weights, seeds)
         if not self._better_than_written(run_id, automatic=False):
             return {"ok": False, "error": f"{run_id} не лучше уже записанного {self.written['run_id']} "
                                           "на той же валидации (или это подвыборка); ответ не перезаписан"}
-        if not self.can_finalize(run_id):
-            return {"ok": False, "error": f"не хватит времени: нужно ~{self.estimate_final_seconds(run_id):.0f}s"}
-        return self._finalize(run_id, class_weights)
+        if not self.can_finalize(run_id, seeds):
+            return {"ok": False, "error": f"не хватит времени: нужно ~{self.estimate_final_seconds(run_id, seeds):.0f}s"}
+        return self._finalize(run_id, class_weights, seeds)
+
+    def tool_tune(self, model="lightgbm", n_trials=15, time_budget_s=None, target_transform=None, hypothesis=""):
+        """Подбор гиперпараметров Optuna (TPE) на текущей схеме валидации. Каждая попытка — обычный запуск
+        evaluate: её можно финализировать и смешивать. Останавливается по n_trials или по бюджету."""
+        if self.setup is None:
+            return {"ok": False, "error": "сначала вызовите set_task"}
+        if model not in MODELS:
+            return {"ok": False, "error": f"model должна быть одной из {MODELS}"}
+        import optuna
+        optuna.logging.set_verbosity(optuna.logging.WARNING)
+        budget = self._eval_budget(time_budget_s if time_budget_s is not None else self.time_left() / 3)
+        if budget is None:
+            return {"ok": False, "error": "времени на подбор не осталось"}
+        try:
+            n_trials = max(1, min(100, int(n_trials)))
+        except (TypeError, ValueError):
+            n_trials = 15
+        started, runs, failures = time.monotonic(), [], 0
+        sampler = optuna.samplers.TPESampler(seed=self.seed + self._counter)
+        study = optuna.create_study(direction="maximize" if self.setup["higher_is_better"] else "minimize",
+                                    sampler=sampler)
+        # первая попытка — параметры по умолчанию: подбор не может оказаться хуже базы
+        study.enqueue_trial({"learning_rate": 0.05})
+        for number in range(n_trials):
+            left = budget - (time.monotonic() - started)
+            if left < 20:
+                break
+            trial = study.ask()
+            params, lr = _suggest_params(trial, model)
+            per_trial = max(20.0, min(left, 2.5 * budget / n_trials))
+            out = self.tool_evaluate(model=model, params=params, learning_rate=lr, target_transform=target_transform,
+                                     time_budget_s=per_trial, hypothesis=f"tune {model} #{number + 1}: {hypothesis}")
+            score = out.get("oof_score") if out.get("oof_score") is not None else out.get("score")
+            if not out.get("ok") or score is None:
+                failures += 1
+                study.tell(trial, state=optuna.trial.TrialState.FAIL)
+                if failures >= 3 and not runs:
+                    break
+                continue
+            study.tell(trial, score)
+            runs.append({"run_id": out["run_id"], "score": score, "params": params, "learning_rate": lr})
+        if not runs:
+            return {"ok": False, "error": "ни одна попытка подбора не удалась", "failures": failures}
+        ranked = sorted(runs, key=lambda r: r["score"], reverse=self.setup["higher_is_better"])
+        self.log(f"[tune] {model}: {len(runs)} попыток за {time.monotonic() - started:.0f}s, лучшая "
+                 f"{ranked[0]['run_id']} = {ranked[0]['score']}")
+        return {"ok": True, "model": model, "trials": len(runs), "failed": failures,
+                "seconds": round(time.monotonic() - started), "best": ranked[0], "top": ranked[:5],
+                "best_run_id": self.best_run(), "best_score": self._score(self.best_run())}
 
     def tool_finish(self, reason=""):
         """Закончить исследование. Если ответ не записан, код сам обучит лучший запуск."""
@@ -691,10 +804,11 @@ class Session:
 
     def _eval_budget(self, requested) -> Optional[float]:
         """Бюджет эксперимента: не больше остатка за вычетом финального обучения; None — времени нет."""
-        reserve = 120.0
+        # пока моделей нет, резерв маленький: первая модель важнее всего; дальше — время финала лучшей
+        reserve = 30.0
         best = self.best_run() if self.setup else None
         if best:
-            reserve = max(reserve, self.estimate_final_seconds(best))
+            reserve = max(60.0, self.estimate_final_seconds(best))
         left = self.time_left() - reserve
         if left < 20:
             return None
@@ -715,6 +829,8 @@ class Session:
                 dropped.append(key)
             elif str(value).lower() == "dart":
                 dropped.append(key)  # dart отключает раннюю остановку и съедает весь бюджет
+            elif model == "xgboost" and key in _XGBOOST_DROP:
+                dropped.append(key)
             elif model == "catboost" and key in _CATBOOST_DROP:
                 dropped.append(key)
             elif model == "catboost" and key in _CATBOOST_RENAME:
@@ -756,39 +872,22 @@ class Session:
         ev = run["eval"][target]
         return ev.oof_index, ev.oof_pred
 
-    def _fit_run(self, run_id) -> dict:
-        """Обучить запуск на всём train (с кэшем): таргет -> {pred, proba, classes, notes, truncated}."""
-        if run_id in self._fits:
-            return self._fits[run_id]
+    def _fit_one(self, run_id, k: int) -> dict:
+        """Одно финальное обучение запуска с сидом seed+k (с кэшем): таргет -> {pred, proba, classes, ...}."""
+        if (run_id, k) in self._fits:
+            return self._fits[(run_id, k)]
         run, setup = self.runs[run_id], self.setup
         config = run["config"]
-        if config["model"] == "blend":
-            members = {m: self._fit_run(m) for m in config["members"]}
-            fits = {}
-            for target in setup["splits"]:
-                weights = config["weights"][target]
-                parts = [members[m][target] for m in config["members"]]
-                if setup["task_type"] == "regression":
-                    pred = sum(w * np.asarray(p["pred"], dtype=float) for w, p in zip(weights, parts))
-                    fits[target] = {"pred": pred, "proba": None, "classes": None}
-                else:
-                    proba = sum(w * np.asarray(p["proba"], dtype=float) for w, p in zip(weights, parts))
-                    classes = parts[0]["classes"]
-                    fits[target] = {"pred": np.asarray(classes)[proba.argmax(axis=1)], "proba": proba, "classes": classes}
-                fits[target]["notes"] = []
-                fits[target]["truncated"] = any(p["truncated"] for p in parts)
-            self._fits[run_id] = fits
-            return fits
         fits = {}
         for target, split in setup["splits"].items():
             ev = run["eval"][target]
             n_rounds = ml_tools.rounds_from(ev)
             budget = max(10.0, self.time_left() + self.final_slack)
-            self.log(f"[fit {run_id}] {target}: {config['model']} n_rounds={n_rounds} budget={budget:.0f}s")
+            self.log(f"[fit {run_id}/seed{k}] {target}: {config['model']} n_rounds={n_rounds} budget={budget:.0f}s")
             out = ml_tools.fit_predict(
                 split, setup["profile"], model=config["model"], n_rounds=n_rounds, params=config["params"],
                 task_type=setup["task_type"], target_transform=config["target_transform"], n_jobs=self.n_jobs,
-                seed=self.seed, time_budget=budget, max_rounds=config["max_rounds"],
+                seed=self.seed + k, time_budget=budget, max_rounds=config["max_rounds"],
                 learning_rate=config["learning_rate"],
             )
             if out.get("status") != "ok":
@@ -799,13 +898,41 @@ class Session:
                 notes.append(f"{target}: обучение урезано по времени: {out['n_rounds']} из {n_rounds} раундов")
             fits[target] = {"pred": out["pred"], "proba": out.get("proba"), "classes": out.get("classes"),
                             "notes": notes, "truncated": truncated}
-        self._fits[run_id] = fits
+        self._fits[(run_id, k)] = fits
         return fits
 
-    def _finalize(self, run_id, class_weights="auto") -> dict:
+    def _combine(self, parts: list, weights: list) -> dict:
+        """Взвешенное среднее предсказаний: значения регрессии или вероятности классов."""
+        fits = {}
+        for target in self.setup["splits"]:
+            items = [p[target] for p in parts]
+            if self.setup["task_type"] == "regression":
+                pred = sum(w * np.asarray(i["pred"], dtype=float) for w, i in zip(weights, items))
+                fits[target] = {"pred": pred, "proba": None, "classes": None}
+            else:
+                proba = sum(w * np.asarray(i["proba"], dtype=float) for w, i in zip(weights, items))
+                classes = items[0]["classes"]
+                fits[target] = {"pred": np.asarray(classes)[proba.argmax(axis=1)], "proba": proba, "classes": classes}
+            fits[target]["notes"] = [n for i in items for n in i.get("notes", [])]
+            fits[target]["truncated"] = any(i["truncated"] for i in items)
+        return fits
+
+    def _fit_run(self, run_id, seeds: int = 1) -> dict:
+        """Финальное обучение запуска: среднее по seeds сидам; смесь — взвешенное среднее участников."""
+        config = self.runs[run_id]["config"]
+        if config["model"] == "blend":
+            parts = [self._fit_run(m, seeds) for m in config["members"]]
+            per_target = {}
+            for target in self.setup["splits"]:
+                per_target[target] = self._combine([{target: p[target]} for p in parts], config["weights"][target])[target]
+            return per_target
+        parts = [self._fit_one(run_id, k) for k in range(max(1, int(seeds)))]
+        return self._combine(parts, [1.0 / len(parts)] * len(parts))
+
+    def _finalize(self, run_id, class_weights="auto", seeds: int = 1) -> dict:
         run, setup = self.runs[run_id], self.setup
         try:
-            fits = self._fit_run(run_id)
+            fits = self._fit_run(run_id, seeds)
         except RuntimeError as error:
             return {"ok": False, "error": str(error)}
         notes = [n for f in fits.values() for n in f["notes"]]
@@ -822,7 +949,8 @@ class Session:
             predictions[target] = (pred, fit["proba"], fit["classes"])
         frame, frame_notes = self._assemble(setup, predictions)
         path = write_submission(frame, self.task_dir, len(setup["split"].X_test), setup["schema"].id_cols)
-        self.written = {"run_id": run_id, "score": self._score(run_id), "model": run["config"]["model"]}
+        self.written = {"run_id": run_id, "score": self._score(run_id), "model": run["config"]["model"],
+                        "seeds": int(seeds)}
         self.log(f"[finalize {run_id}] записан {path} ({len(frame)} строк), cv={self._score(run_id)}")
         return {"ok": True, "path": str(path), "rows": len(frame), "columns": list(frame.columns),
                 "run_id": run_id, "cv_score": self._score(run_id),
@@ -1077,8 +1205,9 @@ TOOL_SPECS = [
                 "model": {"type": "string", "enum": list(MODELS)},
                 "params": {"type": "object",
                            "description": "Гиперпараметры библиотеки: lightgbm num_leaves, min_child_samples, "
-                                          "colsample_bytree, reg_lambda; xgboost max_depth, min_child_weight; "
-                                          "catboost depth, l2_leaf_reg"},
+                                          "colsample_bytree, reg_lambda, class_weight=balanced; xgboost max_depth, "
+                                          "min_child_weight (class_weight не поддерживает); catboost depth, l2_leaf_reg, "
+                                          "auto_class_weights=Balanced. Неподдержанные ключи вернутся в dropped_params"},
                 "learning_rate": {"type": "number"},
                 "target_transform": {"type": "string", "enum": ["none", "log1p"],
                                      "description": "Только регрессия: log1p для неотрицательного скошенного таргета "
@@ -1106,8 +1235,26 @@ TOOL_SPECS = [
                 "run_id": {"type": "string"},
                 "class_weights": {"type": "string", "enum": ["auto", "off"],
                                   "description": "Подбор весов классов под Macro F1 по OOF"},
+                "seeds": {"type": "integer", "description": "1..10: среднее обучений с разными сидами; 3–5 обычно "
+                                                            "немного лучше на test, стоит seeds× времени финала"},
                 "reason": {"type": "string"},
             },
+        },
+    },
+    {
+        "name": "tune",
+        "description": "Подбор гиперпараметров модели (Optuna TPE) на текущей схеме валидации в пределах бюджета. "
+                       "Каждая попытка — обычный запуск (можно finalize/blend). Первая попытка — параметры по умолчанию.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "model": {"type": "string", "enum": list(MODELS)},
+                "n_trials": {"type": "integer", "description": "Сколько попыток (каждая — полная валидация)"},
+                "time_budget_s": {"type": "number", "description": "Лимит на весь подбор"},
+                "target_transform": {"type": "string", "enum": ["none", "log1p"]},
+                "hypothesis": {"type": "string"},
+            },
+            "required": ["model"],
         },
     },
     {

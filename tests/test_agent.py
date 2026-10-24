@@ -308,7 +308,7 @@ class SecondReviewTest(unittest.TestCase):
         sample = pd.read_csv(folder / "sample_submission.csv")
         sample["flag2"] = 0
         sample.to_csv(folder / "sample_submission.csv", index=False)
-        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+        session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 150, log=lambda m: None, n_jobs=2)
         solution.fallback_policy(session)
         sub = pd.read_csv(task.task_md.parent / "submission.csv")
         self.assertTrue(set(sub["flag2"]) <= {0, 1})
@@ -359,6 +359,50 @@ class SecondReviewTest(unittest.TestCase):
         self.assertTrue(chat.tools_supported)
         self.assertEqual([c[0] for c in flaky.calls], [True, True])
         self.assertLessEqual(flaky.calls[0][1], 140.0)
+
+
+class MaxQualityTest(unittest.TestCase):
+    def setUp(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.tmp = Path(tmp.name)
+
+    def test_tune_registers_trials_and_seeds_average_final_fits(self):
+        task, session = session_for(self.tmp, kind="regression", n_train=400)
+        session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+        out = session.call("tune", {"model": "lightgbm", "n_trials": 4, "time_budget_s": 120})
+        self.assertTrue(out["ok"], out)
+        self.assertGreaterEqual(out["trials"], 2)
+        self.assertEqual(session.runs[out["top"][-1]["run_id"]]["config"]["model"], "lightgbm")
+        best = session.best_run()
+        first = session.call("finalize", {"run_id": best})
+        single = pd.read_csv(task.task_md.parent / "submission.csv")["y"].to_numpy()
+        bagged = session.call("finalize", {"run_id": best, "seeds": 3})
+        self.assertTrue(bagged["ok"], bagged)
+        self.assertEqual(session.written["seeds"], 3)
+        averaged = pd.read_csv(task.task_md.parent / "submission.csv")["y"].to_numpy()
+        self.assertFalse(np.allclose(single, averaged))      # действительно другие сиды
+        self.assertEqual(session.estimate_final_seconds(best, 3), 0.0)  # все три сида в кэше
+        self.assertTrue(first["ok"] or "уже записан" in first.get("note", ""))
+
+
+class LLMArgumentTest(unittest.TestCase):
+    def test_garbled_argument_names_are_mapped_or_ignored(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, session = session_for(tmp, kind="regression", n_train=300)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            out = session.call("tune", {"model": "lightgbm", "hypothesisary": "x", "hydrogen-": "x",
+                                        "n_trials-": "2", "time_budget_s-": "60"})
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out["trials"], 2)
+            self.assertEqual(set(out["ignored_args"]), {"hydrogen-"})
+
+    def test_dialog_stops_when_model_loops_on_failing_calls(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, session = session_for(tmp, kind="regression")
+            chat = ScriptedChat([("evaluate", {"model": "nope"})] * 20)
+            summary = agent_llm.run_agent(session, chat, log=lambda m: None)
+            self.assertLessEqual(summary["steps"], 8)
 
 
 class RobustnessTest(unittest.TestCase):
@@ -465,10 +509,14 @@ class RobustnessTest(unittest.TestCase):
         original = agent_llm.OpenAIChat
         agent_llm.OpenAIChat = lambda *a, **k: chat
         chat.model = "scripted"
+        import os
+        os.environ["AGENT_TIME_LIMIT"], os.environ["AGENT_SAFETY_S"] = "150", "30"
+        solution.START = time.monotonic()   # модуль мог быть импортирован раньше другим тестом
         try:
             code = solution.main(["solution.py", str(task.task_md)])
         finally:
             agent_llm.OpenAIChat = original
+            del os.environ["AGENT_TIME_LIMIT"], os.environ["AGENT_SAFETY_S"]
         self.assertEqual(code, 0)
         sub = pd.read_csv(task.task_md.parent / "submission.csv")
         self.assertGreater(sub["y"].nunique(), 1)   # не константа: сработала запасная политика
