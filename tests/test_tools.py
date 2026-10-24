@@ -248,6 +248,19 @@ class SyntheticToolsTest(unittest.TestCase):
         self.assertIs(cut["stopped_by_time"], True)
         self.assertLess(cut["n_rounds"], 100000)
 
+    def test_default_metric_is_reported_not_silent(self):
+        # просьба Ивана (R1): не подставлять метрику молча
+        split, profile, _ = self.prepare(kind="multiclass", n_train=300)  # в синтетическом task.md метрики нет
+        default = mt.train_eval(split, profile, **FAST)
+        self.assertEqual((default.metric, default.metric_source), ("f1_macro", "default"))
+        self.assertTrue(any("по умолчанию f1_macro" in n for n in default.notes))
+        self.assertEqual(default.to_dict()["metric_source"], "default")
+        explicit = mt.train_eval(split, profile, metric="accuracy", **FAST)
+        self.assertEqual(explicit.metric_source, "explicit")
+        self.assertFalse(any("по умолчанию" in n for n in explicit.notes))
+        from_task = mt.train_eval(split, {**profile, "metric": {**profile["metric"], "primary": "accuracy"}}, **FAST)
+        self.assertEqual(from_task.metric_source, "profile")
+
     def test_fit_predict_rejects_unknown_transform(self):
         split, profile, _ = self.prepare(kind="regression")
         self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")

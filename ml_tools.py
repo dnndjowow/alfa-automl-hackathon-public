@@ -28,6 +28,7 @@ class EvalResult:
     model: str = ""
     task_type: str = ""
     metric: str = ""
+    metric_source: str = ""          # "explicit" | "profile" | "default" (подставлена ядром)
     higher_is_better: Optional[bool] = None
     score: Optional[float] = None     # среднее по частям валидации
     oof_score: Optional[float] = None  # метрика по всем проверенным строкам сразу
@@ -49,6 +50,7 @@ class EvalResult:
             return None if v is None or not np.isfinite(v) else float(v)
         return {
             "status": self.status, "model": self.model, "task_type": self.task_type, "metric": self.metric,
+            "metric_source": self.metric_source,
             "higher_is_better": self.higher_is_better, "score": num(self.score), "oof_score": num(self.oof_score),
             "fold_scores": [num(s) for s in self.fold_scores], "best_iterations": list(self.best_iterations),
             "train_sizes": list(self.train_sizes),
@@ -96,12 +98,18 @@ def _resolve_task(profile: dict, task_type) -> str:
 
 
 def _resolve_task_and_metric(profile: dict, task_type, metric):
+    """(тип задачи, метрика, откуда метрика: "explicit" | "profile" | "default")."""
     kind = _resolve_task(profile, task_type)
-    name = metric or profile.get("metric", {}).get("primary") or ("rmse" if kind == "regression" else "f1_macro")
+    if metric is not None:
+        name, source = metric, "explicit"
+    elif profile.get("metric", {}).get("primary"):
+        name, source = profile["metric"]["primary"], "profile"
+    else:
+        name, source = ("rmse" if kind == "regression" else "f1_macro"), "default"
     resolved = ml_metrics.get_metric(name)
     if resolved.task != kind:
         raise ValueError(f"метрика {resolved.name!r} относится к задаче {resolved.task}, а задача — {kind}")
-    return kind, resolved
+    return kind, resolved, source
 
 
 def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric: Optional[str] = None,
@@ -117,15 +125,17 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
     считает метрику задачи своей функцией на каждой итерации (дольше, выигрыш не подтверждён)."""
     started = time.time()
     try:
-        kind, resolved = _resolve_task_and_metric(profile, task_type, metric)
+        kind, resolved, metric_source = _resolve_task_and_metric(profile, task_type, metric)
         if target_transform not in TARGET_TRANSFORMS:
             raise ValueError(f"преобразование таргета {target_transform!r} не поддержано: {TARGET_TRANSFORMS}")
         if not isinstance(split.y_train, pd.Series):
             raise ValueError("несколько таргетов пока не поддержаны")
-        base = dict(model=model, task_type=kind, metric=resolved.name,
+        base = dict(model=model, task_type=kind, metric=resolved.name, metric_source=metric_source,
                     higher_is_better=resolved.higher_is_better, params=dict(params or {}))
         X, y = split.X_train, split.y_train
         notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
+        if metric_source == "default":
+            notes.append(f"метрика не передана и не найдена в task.md: взята по умолчанию {resolved.name}")
         positions = np.arange(len(X))  # позиции строк в исходном split.X_train
         if subsample is not None and subsample < 1.0:
             positions = np.sort(np.random.default_rng(seed).choice(len(X), max(2, int(len(X) * subsample)), replace=False))
