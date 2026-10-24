@@ -369,7 +369,7 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list):
 
 
 ROW_ORDER = "__row_order__"
-ROW_ORDER_ALIASES = {ROW_ORDER, "row_order", "row_number", "order", "index"}
+ROW_ORDER_ALIASES = {ROW_ORDER, "row_order", "row_number"}
 _TIME_ORDER_WORDS = re.compile(
     r"упорядочен\w*\s+по\s+(времени|дате)|в\s+порядке\s+времени|хронологич|ordered\s+by\s+(time|date)|chronolog"
     r"|test\w*[^.\n]{0,60}(более\s+поздн|позже|позднее|later|future|будущ)"
@@ -477,6 +477,7 @@ class Session:
         self._fits = {}                   # (run_id, seed) -> обученные на всём train предсказания
         self._fold_cache = {}             # (схема, таргет) -> номер фолда каждой строки train
         self._reval_cache = {}            # (run_id, сдвиг сида) -> OOF на другом разбиении
+        self._fold_metric_cache = {}      # (run_id, таргет, схема) -> метрики по фолдам
 
     # ---- время ---------------------------------------------------------------
     def time_left(self) -> float:
@@ -659,7 +660,7 @@ class Session:
                       "metric": resolved.name, "metric_obj": resolved, "higher_is_better": resolved.higher_is_better,
                       "prediction_format": prediction_format, "positive": positive, "reason": reason}
         self.plan, self.plan_key = plan, _validation_key(plan)
-        self.runs, self._fits, self._fold_cache, self._reval_cache = {}, {}, {}, {}
+        self.runs, self._fits, self._fold_cache, self._reval_cache, self._fold_metric_cache = {}, {}, {}, {}, {}
         self.log(f"[set_task] target={list(schema.target_cols)} id={list(schema.id_cols)} {task_type} "
                  f"metric={resolved.name} features={len(schema.feature_cols)} validation={plan['strategy']}"
                  + (f" positive={ {t: _label_text(c) for t, c in positive.items()} }" if positive else ""))
@@ -725,6 +726,10 @@ class Session:
         if changed and status == "ok" and subsample is None:
             # новая схема становится текущей только после успешного полного запуска
             self.plan, self.plan_key = plan, key
+        rollback, self._row_order_rollback = getattr(self, "_row_order_rollback", None), None
+        if rollback and (status != "ok" or subsample is not None):
+            self.featureset, self.setup["splits"], self.setup["split"] = rollback
+            self.log(f"[validation] {ROW_ORDER} убран: запуск не удался или был пробой")
         config = {"model": model, "params": params, "learning_rate": float(learning_rate),
                   "target_transform": target_transform, "max_rounds": int(max_rounds), "subsample": subsample,
                   "featureset": self.featureset}
@@ -948,13 +953,20 @@ class Session:
                     pass
         return out
 
+    def _run_fold_metrics(self, run_id, target) -> dict:
+        """Метрики запуска по фолдам текущей схемы (с кэшем: запуски неизменяемы)."""
+        key = (run_id, target, self.plan_key)
+        if key not in self._fold_metric_cache:
+            self._fold_metric_cache[key] = self._fold_metrics(target, *self._oof(run_id, target))
+        return self._fold_metric_cache[key]
+
     def _paired(self, new_id, old_id) -> Optional[dict]:
         """Парное сравнение двух запусков по общим фолдам: относительные разницы (плюс — new лучше)."""
         sign = 1.0 if self.setup["higher_is_better"] else -1.0
         diffs = []
         for target in self.setup["splits"]:
-            a = self._fold_metrics(target, *self._oof(new_id, target))
-            b = self._fold_metrics(target, *self._oof(old_id, target))
+            a = self._run_fold_metrics(new_id, target)
+            b = self._run_fold_metrics(old_id, target)
             for fold in set(a) & set(b):
                 diffs.append(sign * (a[fold] - b[fold]) / max(abs(b[fold]), 1e-12))
         if len(diffs) < 2:
@@ -972,8 +984,11 @@ class Session:
             paired = self._paired(new_id, old_id)
         except Exception:
             paired = None
-        if paired is None:
-            return True
+        if paired is None or paired["folds"] < 5:
+            # мало фолдов (временная схема — обычно 3): SE по 3 точкам шумит и «застревает» на первом
+            # запуске; сравниваем общий OOF с небольшим относительным порогом
+            old = self._score(old_id)
+            return abs(self._score(new_id) - old) > 0.0025 * max(abs(old), 1e-12)
         return paired["gain"] > 0.5 * paired["se"] and paired["wins"] * 2 >= paired["folds"]
 
     def best_run(self) -> Optional[str]:
@@ -1027,6 +1042,9 @@ class Session:
         if strategy == "temporal":
             column = validation.get("column") or (self.plan.get("column") if self.plan["strategy"] == "temporal" else None)
             if column in ROW_ORDER_ALIASES:
+                if ROW_ORDER not in self.setup["split"].X_train.columns:
+                    # откат, если запуск с этой схемой не удастся или окажется пробой на подвыборке
+                    self._row_order_rollback = (self.featureset, self.setup["splits"], self.setup["split"])
                 column = self._ensure_row_order()
             X = self.setup["split"].X_train
             kinds = {c["name"]: c.get("kind") for c in self.profile.get("features", {}).get("columns", [])}
@@ -1168,10 +1186,10 @@ class Session:
         self._fits[(run_id, k)] = fits
         return fits
 
-    def _combine(self, parts: list, weights: list) -> dict:
+    def _combine(self, parts: list, weights: list, targets=None) -> dict:
         """Взвешенное среднее предсказаний: значения регрессии или вероятности классов."""
         fits = {}
-        for target in self.setup["splits"]:
+        for target in (targets or self.setup["splits"]):
             items = [p[target] for p in parts]
             if self.setup["task_type"] == "regression":
                 pred = sum(w * np.asarray(i["pred"], dtype=float) for w, i in zip(weights, items))
@@ -1191,7 +1209,8 @@ class Session:
             parts = [self._fit_run(m, seeds) for m in config["members"]]
             per_target = {}
             for target in self.setup["splits"]:
-                per_target[target] = self._combine([{target: p[target]} for p in parts], config["weights"][target])[target]
+                per_target[target] = self._combine([{target: p[target]} for p in parts], config["weights"][target],
+                                                   targets=[target])[target]
             return per_target
         parts = [self._fit_one(run_id, k) for k in range(max(1, int(seeds)))]
         return self._combine(parts, [1.0 / len(parts)] * len(parts))

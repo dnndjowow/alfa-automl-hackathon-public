@@ -587,6 +587,54 @@ class SecondaryTargetTest(unittest.TestCase):
             self.assertGreater(((test["a"] > 0).astype(int).to_numpy() == sub["flag2"].to_numpy()).mean(), 0.8)
 
 
+class ThirdReviewTest(unittest.TestCase):
+    def test_few_folds_compare_pooled_oof_with_threshold(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, session = session_for(tmp, kind="regression")
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            scores = {"a": 48.98, "b": 49.28, "c": 49.27}
+            session._score = lambda r: scores[r]
+            session._paired = lambda n, o: {"gain": 0.008, "se": 0.013, "wins": 1, "folds": 3}
+            self.assertTrue(session._significantly_better("a", "b"))     # явно лучше по общему OOF
+            self.assertFalse(session._significantly_better("c", "b"))    # почти равны — не меняем
+            session._paired = lambda n, o: {"gain": 0.008, "se": 0.013, "wins": 2, "folds": 5}
+            self.assertFalse(session._significantly_better("a", "b"))    # 5 фолдов — прежнее парное правило
+
+    def test_blend_of_two_targets_can_be_finalized(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(tmp, kind="regression", n_train=600)
+            folder = task.task_md.parent / "data" / "participants"
+            train = pd.read_csv(folder / "train.csv")
+            train["y2"] = train["y"] * 2 + train["b"]
+            train.to_csv(folder / "train.csv", index=False)
+            sample = pd.read_csv(folder / "sample_submission.csv")
+            sample["y2"] = 0.0
+            sample.to_csv(folder / "sample_submission.csv", index=False)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y", "y2"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            session.call("evaluate", {"model": "lightgbm", **FAST})
+            session.call("evaluate", {"model": "catboost", "learning_rate": 0.2, "max_rounds": 120})
+            blend = session.call("blend", {})
+            if blend.get("ok"):
+                fin = session.call("finalize", {"run_id": blend["run_id"]})
+                self.assertTrue(fin["ok"], fin)
+            else:   # смесь могла не дать выигрыша — тогда проверяем напрямую сборку смеси из двух участников
+                session.runs["bx"] = {"config": {"model": "blend", "members": ["r1", "r2"],
+                                                 "weights": {"y": [0.5, 0.5], "y2": [0.5, 0.5]}, "subsample": None},
+                                      "result": {"status": "ok"}}
+                fits = session._fit_run("bx")
+                self.assertEqual(set(fits), {"y", "y2"})
+
+    def test_row_order_probe_is_rolled_back(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            _, session = session_for(tmp, kind="regression", n_train=600)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            out = session.call("evaluate", {"model": "lightgbm", "subsample": 0.5, **FAST,
+                                            "validation": {"strategy": "temporal", "column": "__row_order__"}})
+            self.assertNotIn("__row_order__", session.setup["split"].X_train.columns)
+            self.assertEqual(session.featureset, 0)
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 
