@@ -125,6 +125,8 @@ def find_task_files(task_md) -> TaskFiles:
     refs = referenced_csv_paths(read_task_text(task_md), task_dir)
 
     candidates = {role: [] for role in ROLES}
+    # task.md обычно упоминает и будущий submission.csv: это наш ответ, а не входной файл
+    refs = [p for p in refs if p.name.lower() != "submission.csv"]
     for path in refs:
         role = classify_csv(path)
         if role:
@@ -156,21 +158,37 @@ def find_task_files(task_md) -> TaskFiles:
     return files
 
 
-def read_csv(path) -> pd.DataFrame:
+def read_csv(path, text_columns=()) -> pd.DataFrame:
     """CSV по правилам кейса: UTF-8, запятая, точка; пропуск — только пустая ячейка.
 
     Строки вроде «NA», «None», «null» остаются значениями (это могут быть категории).
+    text_columns читаются как текст без преобразования в числа (например, коды «00123»).
     """
     return pd.read_csv(
-        path, encoding="utf-8-sig", keep_default_na=False, na_values=[""], low_memory=False
+        path, encoding="utf-8-sig", keep_default_na=False, na_values=[""], low_memory=False,
+        dtype={c: str for c in text_columns} or None,
     )
 
 
 def load_task(task_md) -> TaskData:
-    """Найти и прочитать все распознанные файлы задачи. Отсутствующие роли остаются None."""
+    """Найти и прочитать все распознанные файлы задачи. Отсутствующие роли остаются None.
+
+    Тип столбца задаёт train: если там столбец текстовый, а в test он прочитался бы числами
+    («00123» -> 123), test перечитывается с этим столбцом как текстом.
+    """
     files = find_task_files(task_md)
     data = TaskData(files=files, text=read_task_text(files.task_md))
     for role, path in files.paths.items():
         if path is not None:
             setattr(data, role, read_csv(path))
+    if data.train is not None and data.test is not None:
+        text_in_train = [
+            c for c in data.test.columns
+            if c in data.train.columns
+            and not pd.api.types.is_numeric_dtype(data.train[c])
+            and pd.api.types.is_numeric_dtype(data.test[c])
+        ]
+        if text_in_train:
+            data.test = read_csv(files.paths["test"], text_columns=text_in_train)
+            files.warnings.append(f"столбцы {text_in_train} в test прочитаны как текст, как в train")
     return data

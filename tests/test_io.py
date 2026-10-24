@@ -112,6 +112,40 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
             self.assertEqual(data.files.paths["test"], (root / "data" / "test.csv").resolve())
             self.assertTrue(ml_io.display_path(data.files.paths["train"], data.files.task_dir).endswith("train.csv"))
 
+    def test_codes_with_leading_zeros_keep_train_type_in_test(self):
+        # ревью Ивана (Y14): '00123'/'A77' в train — текст, а в test читались числом 123
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "task.md").write_text("`train.csv` `test.csv`", encoding="utf-8")
+        pd.DataFrame({"id": range(4), "code": ["00123", "A77", "00456", "A77"], "y": range(4)}).to_csv(root / "train.csv", index=False)
+        (root / "test.csv").write_text("id,code\n4,00123\n5,00456\n", encoding="utf-8")
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(data.test["code"].tolist(), ["00123", "00456"])
+        self.assertEqual(data.test["id"].tolist(), [4, 5])  # остальные столбцы как были
+        self.assertTrue(any("как текст" in w for w in data.files.warnings))
+
+    def test_numeric_train_column_is_not_forced_to_text(self):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "task.md").write_text("`train.csv` `test.csv`", encoding="utf-8")
+        (root / "train.csv").write_text("id,x,y\n1,1.5,0\n2,2.5,1\n", encoding="utf-8")
+        (root / "test.csv").write_text("id,x\n3,oops\n", encoding="utf-8")
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(data.train["x"].dtype, float)
+        self.assertFalse(any("как текст" in w for w in data.files.warnings))
+
+    def test_existing_submission_referenced_in_task_md_is_ignored(self):
+        # ревью Ивана (Y15): после первого запуска рядом лежит submission.csv, и было ложное предупреждение
+        task, root = self.make(kind="regression")
+        text = task.task_md.read_text(encoding="utf-8")
+        self.assertIn("`submission.csv`", text)
+        (root / "submission.csv").write_text("id,y\n1,2\n", encoding="utf-8")
+        files = ml_io.find_task_files(task.task_md)
+        self.assertEqual(files.warnings, [])
+        self.assertEqual(files.extra_csv, [])
+
     def test_only_empty_cell_is_missing(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
