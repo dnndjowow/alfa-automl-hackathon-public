@@ -20,7 +20,7 @@ _DEFAULT_INT_CLASSES = 20   # целый таргет с не более чем 
 _MAX_INT_CLASSES = 200      # до этого порога целый таргет допускает оба прочтения
 _CLS_WORDS = re.compile(r"классификац|classif", re.IGNORECASE)
 _REG_WORDS = re.compile(r"регресс|regress", re.IGNORECASE)
-_ID_NAME = re.compile(r"id|index|row_?id|uid", re.IGNORECASE)
+_ID_NAME = re.compile(r"id|index|row_?id|uid|\w+_id", re.IGNORECASE)
 
 def _f1_variant(kind: str) -> str:
     """macro F1 во всех встреченных написаниях: «macro F1», «macro-averaged F1», «F1-score (macro)», «F1-мера macro»."""
@@ -84,14 +84,17 @@ def infer_schema(train, test=None, sample_submission=None, dictionary=None) -> d
 
     id_cols = []
     if sample_submission is not None and test is not None and len(sample_submission) == len(test):
-        # id уникален и не помечен словарём как таргет (заглушка таргета в test тоже может совпасть)
+        # id уникален, не помечен словарём как таргет (заглушка таргета в test тоже может совпасть)
+        # и содержит те же значения, что в test; порядок строк в шаблоне может отличаться
         id_cols = [
             c for c in sample_submission.columns
             if c in test.columns and roles.get(c) != "target" and test[c].is_unique
-            and np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy())
+            and set(sample_submission[c].astype(str)) == set(test[c].astype(str))
         ]
         if id_cols:
             sources["id"] = "значения sample_submission совпадают с test"
+            if not all(np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy()) for c in id_cols):
+                notes.append("порядок строк sample_submission отличается от test")
     if not id_cols:
         id_cols = [c for c, r in roles.items() if r == "id" and c in train_cols]
         if id_cols:

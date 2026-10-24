@@ -144,6 +144,19 @@ class RoleOverlapTest(unittest.TestCase):
         schema = ms.resolve_schema(suggestion)
         self.assertEqual((schema.id_cols, schema.target_cols), (("id",), ("y",)))
 
+    def test_id_found_when_sample_rows_are_in_another_order(self):
+        # ревью Ивана (Y13): при другом порядке строк client_id попадал в таргеты
+        rng = np.random.default_rng(0)
+        train = pd.DataFrame({"client_id": range(100, 160), "x": rng.normal(size=60), "y": rng.normal(size=60)})
+        test = pd.DataFrame({"client_id": range(200, 220), "x": rng.normal(size=20)})
+        sample = pd.DataFrame({"client_id": test["client_id"][::-1].to_numpy(), "y": 0.0})
+        suggestion = ms.infer_schema(train, test, sample)
+        self.assertEqual((suggestion["id_cols"], suggestion["target_cols"]), (["client_id"], ["y"]))
+        self.assertIn(suggestion["confidence"], ("high", "medium"))
+        self.assertTrue(any("порядок" in n for n in suggestion["notes"]))
+        by_name = ms.infer_schema(train, test)
+        self.assertEqual(by_name["id_cols"], ["client_id"])
+
     def test_resolve_refuses_overlapping_roles(self):
         train = pd.DataFrame({"id": [1, 2, 3], "x": [1, 2, 3], "y": [5, 6, 7]})
         test = pd.DataFrame({"id": [4, 5], "x": [1, 2]})
