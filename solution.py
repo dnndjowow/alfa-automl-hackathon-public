@@ -144,6 +144,21 @@ def add_safe_features(session, base_seconds) -> None:
     if specs:
         result = session.call("add_features", {"features": specs, "hypothesis": "fallback: частоты и пропуски"})
         log(f"[fallback] add_features: accepted={result.get('accepted')} {result.get('error', '')}")
+    # целые «коды» (много значений, но не непрерывная величина) как категории: выигрывает CatBoost
+    # со статистиками по таргету, поэтому и проверяем CatBoost'ом
+    codes = [c for c in X.columns if pd_numeric(X[c]) and is_code_like(X[c])][:15]
+    if codes and session.time_left() > 8 * base_seconds + 300:
+        result = session.call("add_features", {"features": [{"op": "as_category", "col": c} for c in codes],
+                                               "model": "catboost", "hypothesis": "fallback: коды как категории"})
+        log(f"[fallback] as_category: accepted={result.get('accepted')} {result.get('error', '')}")
+
+
+def is_code_like(series) -> bool:
+    values = series.dropna()
+    if len(values) < 100 or not (values % 1 == 0).all():
+        return False
+    unique = values.nunique()
+    return 20 < unique < 0.5 * len(values)
 
 
 def pd_numeric(series) -> bool:

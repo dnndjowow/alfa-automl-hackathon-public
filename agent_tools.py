@@ -50,8 +50,9 @@ _CATBOOST_RENAME = {"max_depth": "depth", "colsample_bytree": "rsm", "feature_fr
                     "colsample_bylevel": "rsm", "reg_lambda": "l2_leaf_reg", "lambda_l2": "l2_leaf_reg"}
 # XGBoost молча игнорирует эти параметры («Parameters: { class_weight } are not used»): LLM должна это видеть
 _XGBOOST_DROP = {"class_weight", "is_unbalance", "auto_class_weights", "num_leaves", "min_child_samples"}
+# class_weight не выбрасываем: ядро переводит его в auto_class_weights='Balanced'
 _CATBOOST_DROP = {"num_leaves", "min_child_samples", "min_data_in_leaf", "min_child_weight", "gamma",
-                  "reg_alpha", "lambda_l1", "class_weight", "subsample_freq", "bagging_freq", "max_bin_by_feature"}
+                  "reg_alpha", "lambda_l1", "subsample_freq", "bagging_freq", "max_bin_by_feature"}
 _VALIDATION_KEYS = ("strategy", "n_splits", "column", "direction")
 _PROBA_WORDS = re.compile(r"вероятност|probabilit|\bgini\b|джини|\bauc\b|log[\s_-]*loss", re.IGNORECASE)
 _POSITIVE_WORDS = {"1", "true", "yes", "да", "positive", "pos"}
