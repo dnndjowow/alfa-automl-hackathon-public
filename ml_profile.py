@@ -10,6 +10,7 @@ import json
 import math
 import re
 from pathlib import Path
+from typing import Optional
 
 import numpy as np
 import pandas as pd
@@ -179,9 +180,20 @@ def find_risks(train: pd.DataFrame, columns, column_infos) -> list:
     return risks
 
 
-def build_profile(data: ml_io.TaskData) -> dict:
+def build_profile(data: ml_io.TaskData, schema: Optional[ml_schema.Schema] = None) -> dict:
+    """Паспорт задачи. schema — выбранная вызывающим кодом схема (например, после решения LLM):
+    тогда тип задачи, таргет, признаки и сравнение train/test считаются под неё, а не под догадку ядра."""
     train, test = data.train, data.test
     suggestion = ml_schema.infer_schema(train, test, data.sample_submission, data.data_dictionary)
+    if schema is not None:
+        missing = [c for c in schema.target_cols + schema.feature_cols if train is not None and c not in train.columns]
+        if missing:
+            raise ml_schema.SchemaError(f"столбцов {missing} нет в train")
+        suggestion = dict(
+            suggestion, id_cols=list(schema.id_cols), target_cols=list(schema.target_cols),
+            feature_cols=list(schema.feature_cols), confidence="given",
+            sources=dict(suggestion["sources"], schema="задана вызывающим кодом"),
+        )
     files = {}
     for role, path in data.files.paths.items():
         frame = getattr(data, role)
