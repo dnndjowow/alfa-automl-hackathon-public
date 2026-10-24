@@ -368,6 +368,15 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list):
     return train_out, test_out, applied, errors
 
 
+ROW_ORDER = "__row_order__"
+ROW_ORDER_ALIASES = {ROW_ORDER, "row_order", "row_number", "order", "index"}
+_TIME_ORDER_WORDS = re.compile(
+    r"упорядочен\w*\s+по\s+(времени|дате)|в\s+порядке\s+времени|хронологич|ordered\s+by\s+(time|date)|chronolog"
+    r"|test\w*[^.\n]{0,60}(более\s+поздн|позже|позднее|later|future|будущ)"
+    r"|(более\s+поздн|позже|later)[^.\n]{0,40}(test|тест)"
+    r"|(test|тестов)\w*[^.\n]{0,40}(последн|latest|most\s+recent)", re.IGNORECASE)
+
+
 def _fit_args(method, args: dict):
     """Аргументы от LLM к сигнатуре инструмента: «n_trials-» -> n_trials, «hypothesisary» -> hypothesis
     (по префиксу), незнакомые ключи отбрасываются и возвращаются списком, а не роняют вызов."""
@@ -503,6 +512,9 @@ class Session:
                 "metric_source": self.profile["metric"].get("source"),
                 "metric_computed_by": "агент" if self.profile["metric"].get("supported") is False else "ядро",
                 "answer_looks_like_probability": self.sample_suggests_proba(),
+                "validation_hint": (f"по условию test позже train: если временная схема не выбрана по столбцу "
+                                    f"времени, попробуй validation={{strategy: temporal, column: {ROW_ORDER}}}"
+                                    if self.rows_look_time_ordered() else None),
             },
             "all_train_columns": [str(c) for c in self.data.train.columns] if self.data.train is not None else [],
             "extra_csv": [ml_io.display_path(p, self.task_dir) for p in self.data.files.extra_csv],
@@ -1014,6 +1026,8 @@ class Session:
                 "classification": self.setup["task_type"] != "regression", "reason": "выбрано агентом"}
         if strategy == "temporal":
             column = validation.get("column") or (self.plan.get("column") if self.plan["strategy"] == "temporal" else None)
+            if column in ROW_ORDER_ALIASES:
+                column = self._ensure_row_order()
             X = self.setup["split"].X_train
             kinds = {c["name"]: c.get("kind") for c in self.profile.get("features", {}).get("columns", [])}
             if column not in X.columns or not (pd.api.types.is_numeric_dtype(X[column]) or kinds.get(column) == "datetime"):
@@ -1026,6 +1040,33 @@ class Session:
             return None, ("группировка по столбцу не поддержана: group объединяет одинаковые строки train; "
                           "уберите column")
         return plan, None
+
+    def _ensure_row_order(self) -> str:
+        """Столбец с номером строки (train 0..n-1, test продолжает) для временной схемы, когда строки
+        упорядочены по времени, а явного столбца времени нет. Добавляется новым набором признаков."""
+        if ROW_ORDER in self.setup["split"].X_train.columns:
+            return ROW_ORDER
+        current = self.featuresets[self.featureset]
+        new_splits = {}
+        for target, split in current["splits"].items():
+            n_train, n_test = len(self.data.train), len(split.X_test)
+            positions = pd.Series(np.arange(n_train), index=self.data.train.index)
+            X_train = split.X_train.copy()
+            X_train[ROW_ORDER] = positions.reindex(split.X_train.index).to_numpy(dtype=float)
+            X_test = split.X_test.copy()
+            X_test[ROW_ORDER] = np.arange(n_train, n_train + n_test, dtype=float)
+            new_splits[target] = replace(split, X_train=X_train, X_test=X_test)
+        number = max(self.featuresets) + 1
+        self.featuresets[number] = {"splits": new_splits, "specs": current["specs"] + [{"name": ROW_ORDER,
+                                                                                       "spec": {"op": "row_order"}}]}
+        self.featureset = number
+        self.setup["splits"], self.setup["split"] = new_splits, new_splits[next(iter(new_splits))]
+        self.log(f"[validation] добавлен {ROW_ORDER}: временная схема по порядку строк")
+        return ROW_ORDER
+
+    def rows_look_time_ordered(self) -> bool:
+        """Условие говорит, что строки упорядочены по времени / test позже train, а столбца времени нет."""
+        return bool(_TIME_ORDER_WORDS.search(self.data.text or ""))
 
     def _eval_budget(self, requested) -> Optional[float]:
         """Бюджет эксперимента: не больше остатка за вычетом финального обучения; None — времени нет."""
@@ -1532,7 +1573,8 @@ TOOL_SPECS = [
                                                     "и для метрик RMSLE/MSLE"},
                 "validation": {"type": "object",
                                "description": "Сменить схему: {strategy: temporal|group|stratified|kfold, n_splits, "
-                                              "column (только temporal: числовой признак времени), "
+                                              "column (только temporal: числовой признак времени, дата или "
+                                              "__row_order__ — порядок строк, если test позже train), "
                                               "direction: forward|backward}. group = группы одинаковых строк"},
                 "subsample": {"type": "number",
                               "description": "Доля train 0.05..1 для быстрой прикидки; с полными запусками не сравнивается "

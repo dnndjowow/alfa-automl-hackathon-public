@@ -547,6 +547,26 @@ class EarlyFinishTest(unittest.TestCase):
             self.assertEqual(agent_llm.run_agent(session, chat, log=lambda m: None)["finished"], "мало данных")
 
 
+class RowOrderTest(unittest.TestCase):
+    def test_row_order_temporal_validation(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task, session = session_for(tmp, kind="regression", n_train=600)
+            text = task.task_md.read_text(encoding="utf-8") + "\nСтроки упорядочены по времени; test — более поздние.\n"
+            task.task_md.write_text(text, encoding="utf-8")
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            self.assertTrue(session.rows_look_time_ordered())
+            self.assertIsNotNone(session.overview()["suggested"]["validation_hint"])
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            out = session.call("evaluate", {"model": "lightgbm", "validation": {"strategy": "temporal", "column": "row_order"},
+                                            **FAST})
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out["validation"]["strategy"], "temporal")
+            X_train, X_test = session.setup["split"].X_train, session.setup["split"].X_test
+            self.assertEqual(X_train["__row_order__"].max() + 1, X_test["__row_order__"].min())
+            fin = session.call("finalize", {"run_id": out["run_id"]})
+            self.assertTrue(fin["ok"] or "уже записан" in fin.get("note", ""), fin)
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 

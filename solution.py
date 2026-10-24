@@ -93,6 +93,11 @@ def fallback_policy(session) -> None:
 
 def improve(session) -> None:
     """Без LLM: база, затем несколько проверенных на табличных задачах шагов и смесь — пока хватает времени."""
+    if session.plan.get("strategy") != "temporal" and session.rows_look_time_ordered() and not session._ok_runs():
+        # условие говорит «test позже train», а столбца времени нет: проверяем вперёд по порядку строк
+        result = session.call("evaluate", {"model": "lightgbm", "hypothesis": "fallback: порядок строк = время",
+                                           "validation": {"strategy": "temporal", "column": "__row_order__"}})
+        log(f"[fallback] temporal по порядку строк: ok={result.get('ok')} {result.get('error', '')}")
     setup = session.setup
     regression = setup["task_type"] == "regression"
     log_metric = setup["metric"] in ("rmsle", "msle")
