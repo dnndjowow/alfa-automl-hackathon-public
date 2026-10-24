@@ -86,12 +86,17 @@ def _score(metric: ml_metrics.Metric, y_true, pred, task_type: str, n_classes: i
     return metric(y_true, pred, labels=list(range(n_classes)))
 
 
-def _resolve_task_and_metric(profile: dict, task_type, metric):
+def _resolve_task(profile: dict, task_type) -> str:
     kind = task_type or profile.get("task", {}).get("type")
     if kind in ("binary", "multiclass"):
         kind = "classification"
     if kind not in ("regression", "classification"):
         raise ValueError(f"тип задачи {kind!r} пока не поддержан инструментами (нужна регрессия или классификация)")
+    return kind
+
+
+def _resolve_task_and_metric(profile: dict, task_type, metric):
+    kind = _resolve_task(profile, task_type)
     name = metric or profile.get("metric", {}).get("primary") or ("rmse" if kind == "regression" else "f1_macro")
     resolved = ml_metrics.get_metric(name)
     if resolved.task != kind:
@@ -232,7 +237,7 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
     и classes — порядок столбцов; pred содержит метки классов (по наибольшей вероятности)."""
     started = time.time()
     try:
-        kind, _ = _resolve_task_and_metric(profile, task_type, None)
+        kind = _resolve_task(profile, task_type)  # метрика финальному обучению не нужна
         if target_transform not in TARGET_TRANSFORMS:
             raise ValueError(f"преобразование таргета {target_transform!r} не поддержано: {TARGET_TRANSFORMS}")
         if not isinstance(split.y_train, pd.Series):
