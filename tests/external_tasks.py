@@ -1,4 +1,4 @@
-"""Незнакомые задачи из открытых датасетов (OpenML, scikit-learn) для проверки переноса (A10).
+"""Незнакомые задачи из открытых датасетов (OpenML, scikit-learn, зеркала Kaggle) для проверки переноса (A10).
 
 Каждая задача собирается в формате платформы: task.md, train/test без ответов, sample_submission,
 data_dictionary. Скрытые ответы test лежат отдельно (data/external/_truth) и агенту не видны.
@@ -212,9 +212,78 @@ def build_diabetes():
                meta={"metric": "mae", "target": "progression", "id": "patient_id"})
 
 
+# ---- датасеты Kaggle (через открытые зеркала: OpenML и GitHub; логин Kaggle не нужен) -------------
+def build_kaggle_house():
+    from sklearn.datasets import fetch_openml
+    df = fetch_openml(data_id=42165, as_frame=True, parser="auto").frame   # Kaggle House Prices, train.csv
+    train, test = train_test_split(df, test_size=0.25, random_state=SEED)
+    truth = test[["Id", "SalePrice"]].reset_index(drop=True)
+    test = test.drop(columns="SalePrice").reset_index(drop=True)
+    sample = pd.DataFrame({"Id": test["Id"], "SalePrice": 180000.0})
+    text = ("# House Prices (Kaggle)\n\nПредскажите цену продажи дома `SalePrice` по 79 характеристикам.\n\n"
+            + files_block() + "\n## Метрика\n\nКачество — **RMSE между логарифмами** предсказанной и настоящей цены "
+            "(ошибки на дешёвых и дорогих домах весят одинаково). Меньше — лучше.\n\n"
+            "## Формат результата\n\n`submission.csv`: `Id,SalePrice`.\n")
+    write_task("kaggle_house_prices", train, test, sample, truth, text, {"Id": "id", "SalePrice": "target"},
+               meta={"metric": "rmse_log", "target": "SalePrice", "id": "Id"})
+
+
+def build_kaggle_titanic():
+    df = openml("titanic", 1).drop(columns=["boat", "body", "home.dest"])   # как в Kaggle: без утечек
+    df = df.rename(columns={"pclass": "Pclass", "survived": "Survived", "name": "Name", "sex": "Sex", "age": "Age",
+                            "sibsp": "SibSp", "parch": "Parch", "ticket": "Ticket", "fare": "Fare",
+                            "cabin": "Cabin", "embarked": "Embarked"})
+    df["Survived"] = pd.to_numeric(df["Survived"].astype(str)).astype(int)
+    df.insert(0, "PassengerId", np.arange(1, len(df) + 1))
+    train, test = train_test_split(df, test_size=418, random_state=SEED, stratify=df["Survived"])
+    truth = test[["PassengerId", "Survived"]].reset_index(drop=True)
+    test = test.drop(columns="Survived").reset_index(drop=True)
+    sample = pd.DataFrame({"PassengerId": test["PassengerId"], "Survived": 0})
+    text = ("# Titanic (Kaggle)\n\nОпределите, выжил ли пассажир (`Survived`: 1 — да, 0 — нет).\n\n" + files_block() +
+            "\n## Метрика\n\nОсновная метрика — **Accuracy**, больше — лучше.\n\n"
+            "## Формат результата\n\n`submission.csv`: `PassengerId,Survived`, где `Survived` — 0 или 1.\n")
+    write_task("kaggle_titanic", train, test, sample, truth, text, {"PassengerId": "id", "Survived": "target"},
+               meta={"metric": "accuracy", "target": "Survived", "id": "PassengerId"})
+
+
+def build_kaggle_telco():
+    url = "https://raw.githubusercontent.com/IBM/telco-customer-churn-on-icp4d/master/data/Telco-Customer-Churn.csv"
+    df = pd.read_csv(url, dtype=str, keep_default_na=False)   # как в оригинале: TotalCharges с пробелами
+    for col in ("tenure", "MonthlyCharges", "SeniorCitizen"):
+        df[col] = pd.to_numeric(df[col])
+    train, test = train_test_split(df, test_size=0.3, random_state=SEED, stratify=df["Churn"])
+    test = test.reset_index(drop=True)
+    truth = pd.DataFrame({"customerID": test["customerID"], "Churn": (test.pop("Churn") == "Yes").astype(int)})
+    sample = pd.DataFrame({"customerID": test["customerID"], "Churn": 0.5})
+    text = ("# Отток клиентов телеком-оператора (Kaggle Telco Customer Churn)\n\nОцените **вероятность ухода "
+            "клиента** (`Churn` = `Yes`).\n\n" + files_block() +
+            "\n## Метрика\n\nОсновная метрика — **ROC AUC** по вероятности `Yes`.\n\n"
+            "## Формат результата\n\n`submission.csv`: `customerID,Churn`, `Churn` — вероятность ухода.\n")
+    write_task("kaggle_telco_churn", train, test, sample, truth, text, {"customerID": "id", "Churn": "target"},
+               meta={"metric": "roc_auc", "target": "Churn", "id": "customerID"})
+
+
+def build_kaggle_insurance():
+    url = "https://raw.githubusercontent.com/stedy/Machine-Learning-with-R-datasets/master/insurance.csv"
+    df = pd.read_csv(url)
+    df.insert(0, "policy_id", np.arange(5000, 5000 + len(df)))
+    train, test = train_test_split(df, test_size=0.3, random_state=SEED)
+    truth = test[["policy_id", "charges"]].reset_index(drop=True)
+    test = test.drop(columns="charges").reset_index(drop=True)
+    sample = pd.DataFrame({"policy_id": test["policy_id"], "charges": 0.0})
+    text = ("# Медицинская страховка (Kaggle Medical Cost Personal)\n\nПредскажите годовые медицинские расходы "
+            "`charges` по возрасту, ИМТ, курению и региону.\n\n" + files_block() +
+            "\n## Метрика\n\nОсновная метрика — **RMSE**, меньше — лучше.\n\n"
+            "## Формат результата\n\n`submission.csv`: `policy_id,charges`.\n")
+    write_task("kaggle_insurance", train, test, sample, truth, text, {"policy_id": "id", "charges": "target"},
+               meta={"metric": "rmse", "target": "charges", "id": "policy_id"})
+
+
 BUILDERS = {"adult_income": build_adult, "credit_risk": build_credit, "california_housing": build_california,
             "bike_demand": build_bike, "covertype_proba": build_covertype, "wine_quality": build_wine,
-            "energy_two_targets": build_energy, "diabetes_small": build_diabetes}
+            "energy_two_targets": build_energy, "diabetes_small": build_diabetes,
+            "kaggle_house_prices": build_kaggle_house, "kaggle_titanic": build_kaggle_titanic,
+            "kaggle_telco_churn": build_kaggle_telco, "kaggle_insurance": build_kaggle_insurance}
 
 
 # ---- оценка ------------------------------------------------------------------
@@ -251,6 +320,13 @@ def score(name):
             value = skm.log_loss(truth[target], proba, labels=meta["classes"])
             prior = truth[target].value_counts(normalize=True).reindex(meta["classes"]).to_numpy()
             const = skm.log_loss(truth[target], np.tile(prior, (len(truth), 1)), labels=meta["classes"])
+        elif metric == "accuracy":
+            value = skm.accuracy_score(truth[target].astype(str), sub[target].astype(str))
+            const = float(truth[target].value_counts(normalize=True).max())
+        elif metric == "rmse_log":
+            y, p = truth[target].to_numpy(dtype=float), sub[target].to_numpy(dtype=float)
+            value = float(np.sqrt(np.mean((np.log(np.clip(p, 1, None)) - np.log(y)) ** 2)))
+            const = float(np.sqrt(np.mean((np.log(np.median(y)) - np.log(y)) ** 2)))
         elif metric == "rmse_multi":
             value = float(np.mean([np.sqrt(np.mean((truth[t] - sub[t]) ** 2)) for t in target]))
             const = float(np.mean([np.sqrt(np.mean((truth[t] - truth[t].mean()) ** 2)) for t in target]))

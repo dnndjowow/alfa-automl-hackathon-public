@@ -7,11 +7,11 @@
 | Файл | Владелец | Назначение |
 | --- | --- | --- |
 | `solution.py` | Иван | Точка входа `python3 solution.py task.md`: дедлайн, страховочный ответ, LLM-агент, запасная политика, финальная гарантия ответа |
-| `agent_tools.py` | Иван | `Session`: инструменты для LLM (`set_task`, `evaluate`, `finalize`, `finish`), выбор лучшего запуска, сборка и атомарная запись `submission.csv` |
+| `agent_tools.py` | Иван | `Session`: инструменты для LLM (`set_task`, `evaluate`, `blend`, `finalize`, `finish`), выбор лучшего запуска по OOF, смесь моделей, сборка и атомарная запись `submission.csv` |
 | `agent_llm.py` | Иван | Клиент OpenAI-совместимого API, промпт, цикл function calling, разбор вызовов из текста, сжатие истории |
 | `ml_*.py` | Юра | Загрузка, профиль, схема, предобработка, валидация, метрики, модели, `train_eval`/`fit_predict` |
-| `tests/test_agent.py` | Иван | 18 тестов агента. LLM заменена сценарием `ScriptedChat`, ключ не нужен |
-| `tests/external_tasks.py` | Иван | 8 незнакомых задач из OpenML и scikit-learn в формате платформы и оценка по скрытым ответам. В ZIP не входит |
+| `tests/test_agent.py` | Иван | 30 тестов агента. LLM заменена сценарием `ScriptedChat`, ключ не нужен |
+| `tests/external_tasks.py` | Иван | 12 незнакомых задач из OpenML, scikit-learn и зеркал Kaggle в формате платформы и оценка по скрытым ответам. В ZIP не входит |
 
 Модули лежат плоско в корне: платформа копирует только корневые `.py`. `mcp` не используется. Инструменты вызываются в том же процессе через `openai` function calling.
 
@@ -65,6 +65,8 @@ out     = ml_tools.fit_predict(split, profile_eff, model=..., n_rounds=ml_tools.
 
 ### Просьбы к Юре (A07/A11, не блокируют)
 
+Полный список дефектов ядра с воспроизведениями и приоритетами — [REVIEW_FINDINGS.md](REVIEW_FINDINGS.md), раздел 1 (Y1–Y15). До заморозки желательно закрыть Y1–Y8. Ниже — то, что касается общего вызова.
+
 1. `ml_tools.fit_predict` должен принимать `metric` или перестать проверять метрику профиля (`_resolve_task_and_metric(profile, task_type, None)`). Сейчас агент обходит это через `profile_eff`.
 2. `fit_predict` должен отдавать `stopped_by_time`. В `_auto_rounds` нужен try/except по фолдам и учёт переданной схемы валидации.
 3. `ml_validation`: группировка по столбцу (`plan["column"]` для `group`). Сейчас `group` объединяет только одинаковые строки. Агент запрещает LLM передавать `column` для `group`, чтобы её решение не игнорировалось молча.
@@ -75,6 +77,8 @@ out     = ml_tools.fit_predict(split, profile_eff, model=..., n_rounds=ml_tools.
 6. Единый тип `classes` в `EvalResult` (str) и `fit_predict` (исходные метки). Агент сопоставляет их сам.
 
 ## Для Егора: сборка, проверка, сабмит
+
+Замечания к `tools/check_environment.py` и `tools/build_submission.py` — [REVIEW_FINDINGS.md](REVIEW_FINDINGS.md), раздел 2 (E1–E3). Главное — E1: `--api` не проверяет вызов инструментов (function calling), на котором работает агент.
 
 Сборка проверена инструментом из `origin/codex/a03-release-tools` (`tools/build_submission.py`):
 
@@ -96,31 +100,34 @@ python3 solution.py task.md
 
 | Проверка | Результат |
 | --- | --- |
-| `unittest discover -s tests -t .` | 178 тестов; 176 ok. 2 падают только при лежащем рядом `submission.csv`, см. просьбу 4 |
+| `unittest discover -s tests -t .` | 190 тестов; 188 ok. 2 падают только при лежащем рядом `submission.csv`, см. просьбу 4 |
 | Регрессия, запасная политика | temporal-валидация, RMSE 50.2, 11 с, 22 449 строк, порядок id = test |
 | Классификация, запасная политика | group-валидация, Macro F1 0.608, веса классов +0.035 на отложенной части, 110 с |
 | ZIP из чистого каталога, `python -I` | обе задачи дают корректный `submission.csv` |
 | Путь LLM, сценарий вместо модели, регрессия | lightgbm 50.2 → log1p 48.7 → catboost 49.8 → xgboost 52.2; записан лучший (log1p) |
 | Путь LLM, сценарий вместо модели, классификация | подвыборка в финал не попала; catboost, урезанный бюджетом 300 с, дал 0.521 |
 
-Незнакомые задачи (`python tests/external_tasks.py build && python tests/external_tasks.py run`), запасная политика без LLM:
+Незнакомые задачи (`python tests/external_tasks.py build && python tests/external_tasks.py run`), запасная политика без LLM, лимит 900 с на задачу. Столбец «v1» — одна модель LightGBM, «v2» — текущая версия: база, `log1p` для скошенного таргета, CatBoost, XGBoost и смесь по OOF.
 
-| Задача | Что проверяет | Метрика | Итог | Константа |
-| --- | --- | --- | --- | --- |
-| adult_income | нет id в test, `row_id` из шаблона, вероятность `>50K` | ROC AUC ↑ | 0.928 | 0.5 |
-| credit_risk | вероятность класса `bad` (не второго по алфавиту) | ROC AUC ↑ | 0.832 | 0.5 |
-| california_housing | файлы рядом с task.md | RMSE ↓ | 43 495 | 118 563 |
-| bike_demand | RMSLE, прогноз вперёд | RMSLE ↓ | 0.374 | 1.477 |
-| covertype_proba | 7 столбцов вероятностей `cover_type_k` | logloss ↓ | 0.274 | 1.205 |
-| wine_quality | целый таргет, но регрессия по условию | MAE ↓ | 0.460 | 0.629 |
-| energy_two_targets | два таргета | средний RMSE ↓ | 1.03 | 9.84 |
-| diabetes_small | 300 строк train | MAE ↓ | 45.5 | 60.1 |
+| Задача | Что проверяет | Метрика | v1 | v2 | Константа |
+| --- | --- | --- | --- | --- | --- |
+| adult_income | нет id в test, `row_id` из шаблона, вероятность `>50K` | ROC AUC ↑ | 0.928 | 0.929 | 0.5 |
+| credit_risk | вероятность класса `bad` (не второго по алфавиту) | ROC AUC ↑ | 0.832 | 0.825 | 0.5 |
+| california_housing | файлы рядом с task.md | RMSE ↓ | 43 495 | 42 675 | 118 563 |
+| bike_demand | RMSLE, прогноз вперёд | RMSLE ↓ | 0.374 | 0.357 | 1.477 |
+| covertype_proba | 7 столбцов вероятностей `cover_type_k` | logloss ↓ | 0.274 | 0.275 | 1.205 |
+| wine_quality | целый таргет, но регрессия по условию | MAE ↓ | 0.460 | 0.463 | 0.629 |
+| energy_two_targets | два таргета | средний RMSE ↓ | 1.03 | 0.689 | 9.84 |
+| diabetes_small | 300 строк train | MAE ↓ | 45.5 | 44.9 | 60.1 |
+| kaggle_house_prices | 80 признаков, RMSE логарифмов | RMSE log ↓ | 0.130 | 0.116 | 0.386 |
+| kaggle_titanic | метки 0/1, текстовые столбцы | Accuracy ↑ | 0.821 | 0.818 | 0.617 |
+| kaggle_telco_churn | id-строки, `TotalCharges` текстом | ROC AUC ↑ | 0.841 | 0.850 | 0.5 |
+| kaggle_insurance | скошенный таргет | RMSE ↓ | 4 298 | 4 087 | 13 427 |
 
-Во всех восьми задачах формат ответа совпадает с шаблоном. Три ошибки найдены и исправлены, на каждую есть тест:
-
-- **credit_risk** давал AUC 0.168: писалась вероятность не того класса.
-- **energy_two_targets** давал 5.32: второй таргет был константой.
-- **bike_demand** давал 0.550: RMSLE не поддерживалась.
+- Формат ответа совпадает с шаблоном во всех 12 задачах.
+- В v2 девять задач лучше. Три немного хуже, но это маленькие test (300–480 строк) и разница в пределах шума.
+- На covertype за 900 с успела только база. На платформе (3 часа) запасная политика дойдёт до смеси.
+- Найденные ошибки и что с ними сделано — в [REVIEW_FINDINGS.md](REVIEW_FINDINGS.md).
 
 **Не проверено:** настоящая выданная LLM (переменных API на машине нет), Linux-контейнер платформы, полный 3-часовой бюджет.
 
