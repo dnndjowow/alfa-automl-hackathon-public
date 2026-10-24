@@ -281,11 +281,138 @@ def build_kaggle_insurance():
                meta={"metric": "rmse", "target": "charges", "id": "policy_id"})
 
 
+# ---- реальные «тяжёлые» данные: фрод, атаки, банковский скоринг (OpenML) ---------------------------
+def build_fraud():
+    from sklearn.datasets import fetch_openml
+    df = fetch_openml(data_id=1597, as_frame=True, parser="auto").frame.rename(columns={"Class": "is_fraud"})
+    df["is_fraud"] = pd.to_numeric(df["is_fraud"].astype(str)).astype(int)
+    # в версии OpenML нет столбца Time, но строки идут в исходном порядке по времени (как в CSV Kaggle)
+    df = df.reset_index(drop=True)
+    df.insert(0, "transaction_id", np.arange(len(df)))
+    cut = int(len(df) * 0.7)                                   # прогноз вперёд: test — последние 30% по времени
+    train, test = df.iloc[:cut], df.iloc[cut:].reset_index(drop=True)
+    truth = test[["transaction_id", "is_fraud"]].copy()
+    test = test.drop(columns="is_fraud")
+    sample = pd.DataFrame({"transaction_id": test["transaction_id"], "is_fraud": 0.5})
+    text = ("# Мошеннические транзакции по картам\n\nОцените **вероятность того, что транзакция мошенническая** "
+            "(`is_fraud` = 1). Признаки V1–V28 — анонимизированные компоненты, `Amount` — сумма. "
+            "Строки упорядочены по времени; test — более поздние транзакции, чем train.\n\n" + files_block() +
+            "\n## Метрика\n\nОсновная метрика — **Average Precision (PR-AUC)** по вероятности мошенничества: "
+            "мошенничество редкое (около 0.2%), поэтому ROC AUC не используется.\n\n"
+            "## Формат результата\n\n`submission.csv`: `transaction_id,is_fraud`, где `is_fraud` — вероятность от 0 до 1.\n")
+    write_task("real_card_fraud", train, test, sample, truth, text, {"transaction_id": "id", "is_fraud": "target"},
+               meta={"metric": "average_precision", "target": "is_fraud", "id": "transaction_id"})
+
+
+def build_kdd():
+    df = openml("KDDCup99", 1).rename(columns={"label": "attack_type"})
+    df["attack_type"] = df["attack_type"].astype(str).str.rstrip(".")
+    df = df.sample(200000, random_state=SEED).reset_index(drop=True)
+    df.insert(0, "connection_id", np.arange(len(df)))
+    train, test = train_test_split(df, test_size=50000, random_state=SEED)
+    test = test.reset_index(drop=True)
+    truth = test[["connection_id", "attack_type"]].copy()
+    test = test.drop(columns="attack_type")
+    sample = pd.DataFrame({"connection_id": test["connection_id"], "attack_type": "normal"})
+    text = ("# Типы сетевых атак (KDD Cup 99)\n\nПо параметрам сетевого соединения определите тип атаки "
+            "(`attack_type`, `normal` — нет атаки). Классы сильно несбалансированы: есть типы из нескольких строк.\n\n"
+            + files_block() + "\n## Метрика\n\nОсновная метрика — **Macro F1** по всем типам атак.\n\n"
+            "## Формат результата\n\n`submission.csv`: `connection_id,attack_type` — строковая метка типа.\n")
+    write_task("real_kdd_attacks", train, test, sample, truth, text, {"connection_id": "id", "attack_type": "target"},
+               meta={"metric": "f1_macro", "target": "attack_type", "id": "connection_id"})
+
+
+def build_bank():
+    from sklearn.datasets import fetch_openml
+    df = fetch_openml(data_id=1461, as_frame=True, parser="auto").frame
+    names = ["age", "job", "marital", "education", "default", "balance", "housing", "loan", "contact", "day",
+             "month", "duration", "campaign", "pdays", "previous", "poutcome"]
+    df = df.rename(columns={f"V{i + 1}": n for i, n in enumerate(names)}).rename(columns={"Class": "subscribed"})
+    df["subscribed"] = df["subscribed"].astype(str).map({"1": "no", "2": "yes"})
+    df = df.drop(columns="duration")                           # длительность звонка известна только после звонка
+    df.insert(0, "client_id", np.arange(len(df)))
+    cut = int(len(df) * 0.75)                                  # строки упорядочены по дате кампании
+    train, test = df.iloc[:cut], df.iloc[cut:].reset_index(drop=True)
+    truth = pd.DataFrame({"client_id": test["client_id"], "subscribed": (test.pop("subscribed") == "yes").astype(int)})
+    sample = pd.DataFrame({"client_id": test["client_id"], "subscribed": 0.5})
+    text = ("# Отклик на банковский депозит\n\nПо данным клиента и прошлых кампаний оцените **вероятность, что клиент "
+            "откроет депозит** (`subscribed` = `yes`). Строки упорядочены по времени: test — более поздние звонки.\n\n"
+            + files_block() + "\n## Метрика\n\nОсновная метрика — **ROC AUC** по вероятности `yes`.\n\n"
+            "## Формат результата\n\n`submission.csv`: `client_id,subscribed` — вероятность от 0 до 1.\n")
+    write_task("real_bank_marketing", train, test, sample, truth, text, {"client_id": "id", "subscribed": "target"},
+               meta={"metric": "roc_auc", "target": "subscribed", "id": "client_id"})
+
+
+def build_default():
+    from sklearn.datasets import fetch_openml
+    df = fetch_openml(data_id=42477, as_frame=True, parser="auto").frame
+    names = ["LIMIT_BAL", "SEX", "EDUCATION", "MARRIAGE", "AGE", "PAY_0", "PAY_2", "PAY_3", "PAY_4", "PAY_5", "PAY_6",
+             "BILL_AMT1", "BILL_AMT2", "BILL_AMT3", "BILL_AMT4", "BILL_AMT5", "BILL_AMT6",
+             "PAY_AMT1", "PAY_AMT2", "PAY_AMT3", "PAY_AMT4", "PAY_AMT5", "PAY_AMT6"]
+    df = df.rename(columns={f"x{i + 1}": n for i, n in enumerate(names)}).rename(columns={"y": "default_next_month"})
+    df["default_next_month"] = pd.to_numeric(df["default_next_month"].astype(str)).astype(int)
+    df.insert(0, "ID", np.arange(1, len(df) + 1))
+    train, test = train_test_split(df, test_size=0.3, random_state=SEED, stratify=df["default_next_month"])
+    test = test.reset_index(drop=True)
+    truth = test[["ID", "default_next_month"]].copy()
+    test = test.drop(columns="default_next_month")
+    sample = pd.DataFrame({"ID": test["ID"], "default_next_month": 0})
+    text = ("# Дефолт по кредитной карте\n\nПредскажите, допустит ли клиент дефолт в следующем месяце "
+            "(`default_next_month`: 1 — да, 0 — нет) по лимиту, истории платежей и счетов.\n\n" + files_block() +
+            "\n## Метрика\n\nОсновная метрика — **F1-score по классу 1** (дефолт). Больше — лучше.\n\n"
+            "## Формат результата\n\n`submission.csv`: `ID,default_next_month` — метка 0 или 1.\n")
+    write_task("real_credit_default", train, test, sample, truth, text, {"ID": "id", "default_next_month": "target"},
+               meta={"metric": "f1_binary", "target": "default_next_month", "id": "ID"})
+
+
+def build_amazon():
+    from sklearn.datasets import fetch_openml
+    df = fetch_openml(data_id=4135, as_frame=True, parser="auto").frame.rename(columns={"target": "ACTION"})
+    for col in df.columns:
+        df[col] = pd.to_numeric(df[col].astype(str))           # как на Kaggle: коды категорий записаны числами
+    df.insert(0, "id", np.arange(1, len(df) + 1))
+    train, test = train_test_split(df, test_size=0.3, random_state=SEED, stratify=df["ACTION"])
+    test = test.reset_index(drop=True)
+    truth = test[["id", "ACTION"]].copy()
+    test = test.drop(columns="ACTION")
+    sample = pd.DataFrame({"id": test["id"], "ACTION": 0.5})
+    text = ("# Доступ сотрудников к ресурсам (Amazon)\n\nПо ресурсу и роли сотрудника оцените **вероятность одобрения "
+            "доступа** (`ACTION` = 1). Все признаки — коды категорий (менеджер, отдел, должность, ресурс).\n\n"
+            + files_block() + "\n## Метрика\n\nОсновная метрика — **ROC AUC** по вероятности `ACTION` = 1.\n\n"
+            "## Формат результата\n\n`submission.csv`: `id,ACTION` — вероятность от 0 до 1.\n")
+    write_task("real_amazon_access", train, test, sample, truth, text, {"id": "id", "ACTION": "target"},
+               meta={"metric": "roc_auc", "target": "ACTION", "id": "id"})
+
+
+def build_porto():
+    from sklearn.datasets import fetch_openml
+    df = fetch_openml(data_id=42742, as_frame=True, parser="auto").frame
+    df["target"] = pd.to_numeric(df["target"].astype(str)).astype(int)
+    df = df.sample(200000, random_state=SEED).reset_index(drop=True)
+    if "id" not in df.columns:
+        df.insert(0, "id", np.arange(len(df)))
+    df = df.replace({-1: np.nan})                               # в Porto Seguro -1 означает пропуск
+    train, test = train_test_split(df, test_size=0.3, random_state=SEED, stratify=df["target"])
+    test = test.reset_index(drop=True)
+    truth = test[["id", "target"]].copy()
+    test = test.drop(columns="target")
+    sample = pd.DataFrame({"id": test["id"], "target": 0.5})
+    text = ("# Страховые случаи водителей (Porto Seguro)\n\nОцените **вероятность, что водитель подаст страховое "
+            "требование в следующем году** (`target` = 1). Признаки анонимизированы: группы ind/reg/car/calc, суффиксы "
+            "`_cat` — категории, `_bin` — бинарные.\n\n" + files_block() +
+            "\n## Метрика\n\nОсновная метрика — **нормированный Gini** = 2·AUC − 1 по вероятности.\n\n"
+            "## Формат результата\n\n`submission.csv`: `id,target` — вероятность от 0 до 1.\n")
+    write_task("real_porto_seguro", train, test, sample, truth, text, {"id": "id", "target": "target"},
+               meta={"metric": "gini", "target": "target", "id": "id"})
+
+
 BUILDERS = {"adult_income": build_adult, "credit_risk": build_credit, "california_housing": build_california,
             "bike_demand": build_bike, "covertype_proba": build_covertype, "wine_quality": build_wine,
             "energy_two_targets": build_energy, "diabetes_small": build_diabetes,
             "kaggle_house_prices": build_kaggle_house, "kaggle_titanic": build_kaggle_titanic,
-            "kaggle_telco_churn": build_kaggle_telco, "kaggle_insurance": build_kaggle_insurance}
+            "kaggle_telco_churn": build_kaggle_telco, "kaggle_insurance": build_kaggle_insurance,
+            "real_card_fraud": build_fraud, "real_kdd_attacks": build_kdd, "real_bank_marketing": build_bank,
+            "real_credit_default": build_default, "real_amazon_access": build_amazon, "real_porto_seguro": build_porto}
 
 
 # ---- оценка ------------------------------------------------------------------
@@ -313,9 +440,20 @@ def score(name):
         return meta["metric"], None, None, problems
     metric, target = meta["metric"], meta["target"]
     try:
-        if metric == "roc_auc":
+        if metric in ("roc_auc", "gini"):
             value = skm.roc_auc_score(truth[target], sub[target].astype(float))
             const = 0.5
+            if metric == "gini":
+                value, const = 2 * value - 1, 0.0
+        elif metric == "average_precision":
+            value = skm.average_precision_score(truth[target], sub[target].astype(float))
+            const = float(truth[target].mean())
+        elif metric == "f1_binary":
+            value = skm.f1_score(truth[target].astype(int), sub[target].astype(int))
+            const = skm.f1_score(truth[target].astype(int), np.ones(len(truth), dtype=int))
+        elif metric == "f1_macro":
+            value = skm.f1_score(truth[target].astype(str), sub[target].astype(str), average="macro")
+            const = skm.f1_score(truth[target].astype(str), [truth[target].mode()[0]] * len(truth), average="macro")
         elif metric == "logloss":
             cols = [f"{target}_{c}" for c in meta["classes"]]
             proba = sub[cols].to_numpy(dtype=float)
