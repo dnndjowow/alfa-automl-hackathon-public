@@ -9,7 +9,8 @@
   AGENT_TIME_LIMIT — общий лимит секунд (по умолчанию 10800 = 3 часа платформы);
   AGENT_SAFETY_S — запас до лимита на запись ответа и выход (по умолчанию 900);
   AGENT_MAX_STEPS — максимум шагов диалога с моделью (по умолчанию 40);
-  AGENT_LLM=off — не обращаться к LLM (офлайн-проверки, чтобы не тратить общий бюджет ключа).
+  AGENT_LLM=off — не обращаться к LLM (офлайн-проверки, чтобы не тратить общий бюджет ключа);
+  AGENT_STABILIZE=off — не перепроверять лучших кандидатов на другом разбиении (для A/B).
 """
 
 from __future__ import annotations
@@ -24,9 +25,24 @@ START = time.monotonic()
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
+# вывод в файл на Windows идёт в кодировке локали (cp1251): символ из ответа LLM ронял print и весь агент
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="backslashreplace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="backslashreplace")
+except Exception:
+    pass
+
+
 def log(message: str) -> None:
     elapsed = time.monotonic() - START
-    print(f"[{elapsed:7.1f}s] {message}", flush=True)
+    line = f"[{elapsed:7.1f}s] {message}"
+    try:
+        print(line, flush=True)
+    except Exception:  # журнал никогда не должен останавливать решение
+        try:
+            print(line.encode("ascii", "backslashreplace").decode("ascii"), flush=True)
+        except Exception:
+            pass
 
 
 def load_local_env() -> None:
@@ -177,6 +193,37 @@ def blend(session) -> None:
         log(f"[fallback] blend: ok={result.get('ok')} {result.get('error', '')}")
 
 
+def stabilize(session, max_rows: int = 5000) -> None:
+    """Маленькие данные: CV шумный, а долгий поиск выбирает «победителя» по шуму. Перепроверить 2–3 лучших
+    кандидата на другом разбиении и записать лучший по среднему двух проверок."""
+    written = session.written or {}
+    if os.environ.get("AGENT_STABILIZE", "on").lower() == "off":
+        return
+    if session.setup is None or not written.get("run_id") or written["run_id"] not in session.runs:
+        return
+    if len(session.setup["split"].X_train) > max_rows:
+        return
+    key = session.runs[written["run_id"]]["key"]
+    pool = [r for r in session._ok_runs(full_only=True) if session.runs[r]["key"] == key]
+    ranked = sorted(pool, key=lambda r: _rank(session, r))[:3]
+    candidates = list(dict.fromkeys([written["run_id"]] + ranked))
+    if len(candidates) < 2:
+        return
+    cost = sum(session.estimate_final_seconds(c) for c in candidates) * 3
+    if cost > 0.3 * session.time_left():
+        log("[stabilize] на перепроверку не хватает времени")
+        return
+    scores = session.revalidate(candidates)
+    if written["run_id"] not in scores or len(scores) < 2:
+        return
+    sign = 1 if session.setup["higher_is_better"] else -1
+    best = max(scores, key=lambda r: sign * scores[r]["mean"])
+    log(f"[stabilize] {scores} -> {best}")
+    if best != written["run_id"] and session.can_finalize(best):
+        result = session._finalize(best)
+        log(f"[stabilize] записан {best}: ok={result.get('ok')} {result.get('error', '')}")
+
+
 def polish(session) -> None:
     """Если время осталось: записанный лучший запуск переобучить средним по нескольким сидам."""
     written = session.written or {}
@@ -264,6 +311,7 @@ def main(argv) -> int:
         log("[agent] обученной модели нет: запасная политика")
         guarded(fallback_policy, session)
     guarded(ensure_final, session)
+    guarded(stabilize, session)
     guarded(polish, session)
     if not submission.exists():
         log("submission.csv не создан")

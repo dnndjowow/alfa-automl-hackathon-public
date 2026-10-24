@@ -482,6 +482,40 @@ class AddFeaturesTest(unittest.TestCase):
                 self.assertEqual(session.featureset, 0)
 
 
+class StabilizeTest(unittest.TestCase):
+    def test_revalidation_scores_runs_and_blends_on_new_folds(self):
+        import solution
+        with tempfile.TemporaryDirectory() as tmp:
+            task, session = session_for(tmp, kind="regression", n_train=500)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            session.call("evaluate", {"model": "lightgbm", **FAST})
+            session.call("evaluate", {"model": "catboost", "learning_rate": 0.2, "max_rounds": 120})
+            blend = session.call("blend", {})
+            ids = ["r1", "r2"] + ([blend["run_id"]] if blend.get("ok") else [])
+            scores = session.revalidate(ids)
+            self.assertEqual(set(scores), set(ids))
+            for value in scores.values():
+                self.assertNotEqual(value["first"], value["second"])     # действительно другое разбиение
+            solution.log = lambda m: None
+            solution.stabilize(session)                                   # выбирает и записывает без ошибок
+            self.assertIn(session.written["run_id"], ids)
+
+
+class LoggingTest(unittest.TestCase):
+    def test_log_survives_unencodable_characters(self):
+        import io, sys, solution
+        raw = io.BytesIO()
+        stream = io.TextIOWrapper(raw, encoding="cp1251", errors="strict")
+        original = sys.stdout
+        sys.stdout = stream
+        try:
+            solution.log("ответ LLM: площадь ft² → 18⅓ °C ✓")
+            stream.flush()
+        finally:
+            sys.stdout = original
+        self.assertIn(b"LLM", raw.getvalue())
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 
