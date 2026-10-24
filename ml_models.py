@@ -18,6 +18,7 @@ from ml_postprocess import macro_f1_codes
 
 MODELS = ("lightgbm", "xgboost", "catboost")
 TASKS = ("regression", "classification")
+_MIN_PROBA = 1e-4  # вероятность класса, которого не было в обучающей части
 
 
 class ModelError(ValueError):
@@ -210,7 +211,12 @@ class BoostingModel:
         if proba.ndim == 1:
             proba = np.column_stack([1 - proba, proba])
         out = np.zeros((len(X), self.n_classes))
-        out[:, self._present] = proba  # класс, не попавший в fit, получает вероятность 0
+        out[:, self._present] = proba
+        if len(self._present) < self.n_classes:
+            # класс, не попавший в fit, получает малую вероятность вместо нуля: при нуле logloss на его
+            # строках около 34 и портит сравнение моделей; выбор класса (argmax) от этого не меняется
+            out = np.clip(out, _MIN_PROBA, None)
+            out /= out.sum(axis=1, keepdims=True)
         return out
 
     # ---- общее --------------------------------------------------------------

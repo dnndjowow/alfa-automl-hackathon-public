@@ -73,8 +73,9 @@ class EveryModelTest(unittest.TestCase):
                 m = model(name, "classification", n_classes=4).fit(X[keep], y[keep])
                 proba = m.predict(X)
                 self.assertEqual(proba.shape, (400, 4))
-                self.assertTrue((proba[:, 2] == 0).all())
+                self.assertTrue((proba[:, 2] > 0).all() and (proba[:, 2] <= 1e-4).all())
                 np.testing.assert_allclose(proba.sum(axis=1), 1.0, atol=1e-5)
+                self.assertFalse((proba.argmax(axis=1) == 2).any())
 
     def test_unseen_and_missing_values_in_predict(self):
         X, y = make_data("regression")
@@ -233,6 +234,14 @@ class BehaviourTest(unittest.TestCase):
                 self.assertNotIn(key, m.params)
                 self.assertTrue(any("dart" in n for n in m.param_notes_))
                 self.assertLess(m.best_iteration_, 200)
+
+    def test_logloss_stays_finite_when_a_class_is_missing_from_fit(self):
+        # наблюдение Ивана: вероятность 0 у отсутствующего класса давала logloss около 34 на строку
+        X, y = make_data("classification", k=4)
+        keep = y != 3
+        proba = model("lightgbm", "classification", n_classes=4).fit(X[keep], y[keep]).predict(X)
+        value = ml_metrics.compute("logloss", y, proba, labels=[0, 1, 2, 3])
+        self.assertLess(value, 5.0)
 
     def test_errors(self):
         X, y = make_data("regression")
