@@ -261,6 +261,30 @@ class SyntheticToolsTest(unittest.TestCase):
         from_task = mt.train_eval(split, {**profile, "metric": {**profile["metric"], "primary": "accuracy"}}, **FAST)
         self.assertEqual(from_task.metric_source, "profile")
 
+    def test_fit_predict_auto_rounds_uses_given_validation_and_survives_failed_parts(self):
+        # просьба Ивана (R5): подбор раундов учитывает переданную схему и не падает из-за одной части
+        split, profile, _ = self.prepare(kind="regression", n_train=600)
+        plan = {"strategy": "kfold", "n_splits": 3, "classification": False}
+        given = mt.fit_predict(split, profile, validation=plan, **FAST)
+        self.assertEqual(given["status"], "ok", given.get("error"))
+        self.assertTrue(any("схема kfold" in n for n in given["notes"]))
+        real_fit, calls = mt.BoostingModel.fit, []
+
+        def flaky(model, *args, **kwargs):
+            calls.append(1)
+            if len(calls) == 2:
+                raise RuntimeError("сбой во второй части")
+            return real_fit(model, *args, **kwargs)
+
+        with mock.patch.object(mt.BoostingModel, "fit", flaky):
+            survived = mt.fit_predict(split, profile, validation=plan, **FAST)
+        self.assertEqual(survived["status"], "ok", survived.get("error"))
+        self.assertTrue(any("часть 2 пропущена" in n for n in survived["notes"]))
+        with mock.patch.object(mt.BoostingModel, "fit", side_effect=RuntimeError("всегда")):
+            failed = mt.fit_predict(split, profile, validation=plan, **FAST)
+        self.assertEqual(failed["status"], "error")
+        self.assertIn("ни на одной части", failed["error"])
+
     def test_fit_predict_rejects_unknown_transform(self):
         split, profile, _ = self.prepare(kind="regression")
         self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")

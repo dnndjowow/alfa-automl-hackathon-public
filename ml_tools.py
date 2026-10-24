@@ -222,36 +222,46 @@ def rounds_from(result: EvalResult, margin: float = 1.15, how: str = "mean") -> 
 
 
 def _auto_rounds(X, target, kind, profile, n_classes, model, params, n_jobs, seed, max_rounds,
-                 learning_rate, time_budget, margin=1.15):
-    """Подобрать число раундов ранней остановкой на каждой части валидации и усреднить (как rounds_from)."""
+                 learning_rate, time_budget, validation=None, margin=1.15):
+    """Подобрать число раундов ранней остановкой на каждой части валидации и усреднить (как rounds_from).
+
+    validation — схема от вызывающего кода (иначе suggest_validation). Сбой одной части не роняет
+    подбор; если не удалась ни одна, поднимается ValueError. Возвращает (раунды, схема, заметки)."""
     started = time.time()
-    plan = ml_validation.suggest_validation(profile, X)
+    plan = dict(validation or ml_validation.suggest_validation(profile, X))
     splits = ml_validation.make_splits(plan, X, target if kind == "classification" else None, seed=seed)
-    iterations = []
+    iterations, notes = [], []
     for number, (tr, va) in enumerate(splits):
         budget = None
         if time_budget is not None:
             remaining = time_budget - (time.time() - started)
             if remaining <= 0 and iterations:
+                notes.append(f"подбор раундов: бюджет исчерпан, посчитано частей {len(iterations)} из {len(splits)}")
                 break
             budget = max(remaining, 0.0) / (len(splits) - number)
-        pre = TabularPreprocessor()
-        boosting = BoostingModel(model, kind, n_classes=n_classes, params=params, n_jobs=n_jobs, seed=seed,
-                                 max_rounds=max_rounds, learning_rate=learning_rate, time_budget=budget)
-        boosting.fit(pre.fit_transform(X.iloc[tr]), target[tr], pre.transform(X.iloc[va]), target[va])
-        iterations.append(boosting.best_iteration_)
-    return max(1, int(round(float(np.mean(iterations)) * margin))), plan["strategy"]
+        try:
+            pre = TabularPreprocessor()
+            boosting = BoostingModel(model, kind, n_classes=n_classes, params=params, n_jobs=n_jobs, seed=seed,
+                                     max_rounds=max_rounds, learning_rate=learning_rate, time_budget=budget)
+            boosting.fit(pre.fit_transform(X.iloc[tr]), target[tr], pre.transform(X.iloc[va]), target[va])
+            iterations.append(boosting.best_iteration_)
+        except Exception as error:  # одна неудачная часть не должна ронять финальное обучение
+            notes.append(f"подбор раундов: часть {number + 1} пропущена: {type(error).__name__}: {error}")
+    if not iterations:
+        raise ValueError("число раундов не подобрано ни на одной части; " + "; ".join(notes[-3:]))
+    return max(1, int(round(float(np.mean(iterations)) * margin))), plan["strategy"], notes
 
 
 def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_rounds: Optional[int] = None,
                 params: Optional[dict] = None, task_type: Optional[str] = None,
                 target_transform: Optional[str] = None, n_jobs: Optional[int] = None, seed: int = 0,
-                time_budget: Optional[float] = None, max_rounds: int = 3000, learning_rate: float = 0.05) -> dict:
+                time_budget: Optional[float] = None, max_rounds: int = 3000, learning_rate: float = 0.05,
+                validation: Optional[dict] = None) -> dict:
     """Обучить на всём train и предсказать test.
 
     n_rounds — число раундов (обычно rounds_from(результат train_eval)). Если не задано, оно
-    подбирается ранней остановкой на одной части валидации; обучать max_rounds без остановки
-    не будем. Регрессия: pred (n,) в исходной шкале таргета. Классификация: proba (n, K)
+    подбирается ранней остановкой по частям валидации (схема validation или suggest_validation);
+    обучать max_rounds без остановки не будем. Регрессия: pred (n,) в исходной шкале таргета. Классификация: proba (n, K)
     и classes — порядок столбцов; pred содержит метки классов (по наибольшей вероятности)."""
     started = time.time()
     try:
@@ -264,9 +274,11 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
         n_classes = len(codec.classes_) if codec else None
         notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
         if n_rounds is None:
-            n_rounds, scheme = _auto_rounds(split.X_train, target, kind, profile, n_classes, model, params,
-                                            n_jobs, seed, max_rounds, learning_rate,
-                                            None if time_budget is None else time_budget / 2)
+            n_rounds, scheme, round_notes = _auto_rounds(
+                split.X_train, target, kind, profile, n_classes, model, params, n_jobs, seed, max_rounds,
+                learning_rate, None if time_budget is None else time_budget / 2, validation=validation,
+            )
+            notes += round_notes
             notes.append(f"n_rounds={n_rounds} подобрано ранней остановкой (схема {scheme})")
         pre = TabularPreprocessor()
         X_tr, X_te = pre.fit_transform(split.X_train), pre.transform(split.X_test)
