@@ -10,7 +10,7 @@
   AGENT_SAFETY_S — запас до лимита на запись ответа и выход (по умолчанию 900);
   AGENT_MAX_STEPS — максимум шагов диалога с моделью (по умолчанию 40);
   AGENT_LLM=off — не обращаться к LLM (офлайн-проверки, чтобы не тратить общий бюджет ключа);
-  AGENT_STABILIZE=off — не перепроверять лучших кандидатов на другом разбиении (для A/B).
+  AGENT_STABILIZE=on — перепроверять лучших кандидатов на другом разбиении (маленькие данные; идёт A/B).
 """
 
 from __future__ import annotations
@@ -197,7 +197,7 @@ def stabilize(session, max_rows: int = 5000) -> None:
     """Маленькие данные: CV шумный, а долгий поиск выбирает «победителя» по шуму. Перепроверить 2–3 лучших
     кандидата на другом разбиении и записать лучший по среднему двух проверок."""
     written = session.written or {}
-    if os.environ.get("AGENT_STABILIZE", "on").lower() == "off":
+    if os.environ.get("AGENT_STABILIZE", "off").lower() != "on":   # включится по итогам A/B
         return
     if session.setup is None or not written.get("run_id") or written["run_id"] not in session.runs:
         return

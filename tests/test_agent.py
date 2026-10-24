@@ -497,7 +497,12 @@ class StabilizeTest(unittest.TestCase):
             for value in scores.values():
                 self.assertNotEqual(value["first"], value["second"])     # действительно другое разбиение
             solution.log = lambda m: None
-            solution.stabilize(session)                                   # выбирает и записывает без ошибок
+            import os
+            os.environ["AGENT_STABILIZE"] = "on"
+            try:
+                solution.stabilize(session)                               # выбирает и записывает без ошибок
+            finally:
+                del os.environ["AGENT_STABILIZE"]
             self.assertIn(session.written["run_id"], ids)
 
 

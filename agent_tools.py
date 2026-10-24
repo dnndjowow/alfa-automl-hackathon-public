@@ -467,6 +467,7 @@ class Session:
         self._counter = 0                 # номера запусков не повторяются даже после нового set_task
         self._fits = {}                   # (run_id, seed) -> обученные на всём train предсказания
         self._fold_cache = {}             # (схема, таргет) -> номер фолда каждой строки train
+        self._reval_cache = {}            # (run_id, сдвиг сида) -> OOF на другом разбиении
 
     # ---- время ---------------------------------------------------------------
     def time_left(self) -> float:
@@ -646,7 +647,7 @@ class Session:
                       "metric": resolved.name, "metric_obj": resolved, "higher_is_better": resolved.higher_is_better,
                       "prediction_format": prediction_format, "positive": positive, "reason": reason}
         self.plan, self.plan_key = plan, _validation_key(plan)
-        self.runs, self._fits, self._fold_cache = {}, {}, {}
+        self.runs, self._fits, self._fold_cache, self._reval_cache = {}, {}, {}, {}
         self.log(f"[set_task] target={list(schema.target_cols)} id={list(schema.id_cols)} {task_type} "
                  f"metric={resolved.name} features={len(schema.feature_cols)} validation={plan['strategy']}"
                  + (f" positive={ {t: _label_text(c) for t, c in positive.items()} }" if positive else ""))
@@ -715,7 +716,8 @@ class Session:
         config = {"model": model, "params": params, "learning_rate": float(learning_rate),
                   "target_transform": target_transform, "max_rounds": int(max_rounds), "subsample": subsample,
                   "featureset": self.featureset}
-        self.runs[run_id] = {"config": config, "result": summary, "eval": evals, "key": key, "hypothesis": hypothesis}
+        self.runs[run_id] = {"config": config, "result": summary, "eval": evals, "key": key, "hypothesis": hypothesis,
+                             "plan": dict(plan)}
         best = self.best_run()
         self.log(f"[evaluate {run_id}] status={status} score={summary.get('score')} "
                  f"({summary['seconds']:.0f}s) best={best}")
@@ -1319,6 +1321,56 @@ class Session:
                 "oof_score": blended, "best_single": best_single, "best_single_oof": self._score(best_single),
                 "paired_vs_best_single": paired, "best_run_id": self.best_run(),
                 "note": "обучить и записать смесь: finalize(run_id)"}
+
+    def _reval_oof(self, run_id, offset: int) -> dict:
+        """OOF запуска на другом разбиении (сид фолдов + offset): таргет -> (позиции, предсказания)."""
+        key = (run_id, offset)
+        if key in self._reval_cache:
+            return self._reval_cache[key]
+        run = self.runs[run_id]
+        config = run["config"]
+        if config["model"] == "blend":
+            parts = [self._reval_oof(m, offset) for m in config["members"]]
+            out = {}
+            for target in self.setup["splits"]:
+                common = None
+                for part in parts:
+                    common = np.asarray(part[target][0]) if common is None else np.intersect1d(common, part[target][0])
+                mix = 0
+                for part, weight in zip(parts, config["weights"][target]):
+                    index, pred = part[target]
+                    order = pd.Series(np.arange(len(index)), index=index).loc[common].to_numpy()
+                    mix = mix + weight * np.asarray(pred, dtype=float)[order]
+                out[target] = (common, mix)
+        else:
+            splits = self.featuresets[config.get("featureset", 0)]["splits"]
+            out = {}
+            for target, split in splits.items():
+                result = ml_tools.train_eval(
+                    split, self.setup["profile"], model=config["model"], metric=self.setup["metric_obj"],
+                    validation=run.get("plan") or self.plan, params=config["params"], task_type=self.setup["task_type"],
+                    target_transform=config["target_transform"], n_jobs=self.n_jobs, seed=self.seed + offset,
+                    time_budget=max(20.0, self.time_left() / 4), max_rounds=config["max_rounds"],
+                    learning_rate=config["learning_rate"])
+                if result.status != "ok":
+                    raise RuntimeError(f"перепроверка {run_id}: {result.error}")
+                out[target] = (result.oof_index, result.oof_pred)
+        self._reval_cache[key] = out
+        return out
+
+    def revalidate(self, run_ids, offset: int = 1) -> dict:
+        """Оценка кандидатов на новом разбиении: run_id -> {"first", "second", "mean"} (метрика по всем OOF)."""
+        scores = {}
+        for run_id in run_ids:
+            try:
+                oof = self._reval_oof(run_id, offset)
+                second = float(np.mean([self._oof_metric(t, *oof[t]) for t in self.setup["splits"]]))
+            except Exception as error:
+                self.log(f"[revalidate] {run_id}: {type(error).__name__}: {_short(error, 150)}")
+                continue
+            first = self._score(run_id)
+            scores[run_id] = {"first": first, "second": second, "mean": (first + second) / 2}
+        return scores
 
     def _score(self, run_id):
         """Оценка для сравнения запусков: метрика по всем OOF-строкам сразу, иначе среднее по частям."""
