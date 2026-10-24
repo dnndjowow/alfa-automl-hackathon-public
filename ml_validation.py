@@ -10,6 +10,8 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold, KFold, StratifiedGroupKFold, StratifiedKFold
 
+from ml_data import date_days
+
 STRATEGIES = ("temporal", "group", "stratified", "kfold")
 
 
@@ -49,8 +51,11 @@ def suggest_validation(profile: dict, X_train: pd.DataFrame = None, n_splits: in
         side = sides.get(name, "above")
         if (
             share >= 0.9 and info is not None and side in ("above", "below")
-            and (info["dtype"].startswith(("int", "uint")) or info.get("integer_valued"))
-            and 3 <= info["n_unique"] <= 50
+            and (
+                info.get("kind") == "datetime" and info["n_unique"] >= 3
+                or (info["dtype"].startswith(("int", "uint")) or info.get("integer_valued"))
+                and 3 <= info["n_unique"] <= 50
+            )
         ):
             direction = "forward" if side == "above" else "backward"
             where = "более поздних" if direction == "forward" else "более ранних"
@@ -58,8 +63,8 @@ def suggest_validation(profile: dict, X_train: pd.DataFrame = None, n_splits: in
                 "strategy": "temporal", "column": name, "direction": direction,
                 "n_splits": min(3, info["n_unique"] - 1), "classification": classification,
                 "reason": f"{share:.0%} строк test лежат {'выше' if side == 'above' else 'ниже'} границ train "
-                          f"по целочисленному признаку {name!r} ({info['n_unique']} значений): "
-                          f"проверяем на {where} значениях",
+                          f"по {'дате' if info.get('kind') == 'datetime' else 'целочисленному признаку'} {name!r} "
+                          f"({info['n_unique']} значений): проверяем на {where} значениях",
             }
     if X_train is not None and len(X_train):
         shared = float(X_train.duplicated(keep=False).mean())
@@ -76,20 +81,44 @@ def suggest_validation(profile: dict, X_train: pd.DataFrame = None, n_splits: in
             "reason": "особенностей, требующих другой схемы, не найдено"}
 
 
+_PER_VALUE_LIMIT = 50  # до стольких значений временного столбца проверяем по одному значению (году)
+
+
+def _time_values(series: pd.Series) -> np.ndarray:
+    """Числа как есть, текстовые даты — в днях от 1970-01-01."""
+    if pd.api.types.is_numeric_dtype(series):
+        return series.to_numpy(dtype=float)
+    parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce", format="mixed")
+    return date_days(parsed).to_numpy(dtype=float)
+
+
 def _temporal(plan, X):
     column = plan.get("column")
     if column not in X.columns:
         raise ValidationError(f"столбца {column!r} для временной схемы нет в признаках")
-    values = X[column].to_numpy(dtype=float)
-    uniq = np.unique(values[~np.isnan(values)])
+    values = _time_values(X[column])
+    known = values[~np.isnan(values)]
+    uniq = np.unique(known)
     k = min(int(plan.get("n_splits", 3)), len(uniq) - 1)
     if k < 1:
         raise ValidationError(f"в {column!r} меньше двух значений: временная схема невозможна")
     backward = plan.get("direction", "forward") == "backward"
+    if len(uniq) <= _PER_VALUE_LIMIT:
+        # каждая часть — одно значение (например, год); учимся на более ранних (или поздних)
+        blocks = [(v, v) for v in (uniq[:k][::-1] if backward else uniq[-k:])]
+    else:
+        # много значений (даты): k последних (или первых) блоков по 1/(k+2) строк
+        edges = np.quantile(known, np.linspace(0, 1, k + 3))
+        pairs = list(zip(edges[:-1], edges[1:]))
+        blocks = pairs[:k][::-1] if backward else pairs[-k:]
     splits = []
-    for v in (uniq[:k][::-1] if backward else uniq[-k:]):
-        train = np.flatnonzero(values > v) if backward else np.flatnonzero(values < v)
-        valid = np.flatnonzero(values == v)
+    for low, high in blocks:
+        last = high == known.max() or low == high
+        valid = np.flatnonzero((values >= low) & ((values <= high) if last else (values < high)))
+        if backward:
+            train = np.flatnonzero(values > high) if low == high else np.flatnonzero(values >= high)
+        else:
+            train = np.flatnonzero(values < low)
         if len(train) and len(valid):
             splits.append((train, valid))
     return Splits(splits, "temporal", len(splits))

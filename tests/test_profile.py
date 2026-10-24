@@ -101,6 +101,15 @@ class SyntheticProfileTest(unittest.TestCase):
         tt = mp.compare_train_test(train, test, ["t", "u", "w"])
         self.assertEqual(tt["out_of_train_range_side"], {"t": "above", "u": "below", "w": "both"})
 
+    def test_dates_are_profiled_and_compared_as_time(self):
+        train = pd.DataFrame({"d": pd.date_range("2020-01-01", periods=60).strftime("%Y-%m-%d")})
+        test = pd.DataFrame({"d": pd.date_range("2020-06-01", periods=10).strftime("%Y-%m-%d")})
+        info = mp.profile_column(train["d"])
+        self.assertEqual(info["kind"], "datetime")
+        tt = mp.compare_train_test(train, test, ["d"])
+        self.assertEqual((tt["out_of_train_range_share"]["d"], tt["out_of_train_range_side"]["d"]), (1.0, "above"))
+        self.assertEqual(tt["unseen_categories_share"], {})
+
     def test_unseen_categories_ignore_int_float_text(self):
         tt = mp.compare_train_test(pd.DataFrame({"c": ["A", "1"]}), pd.DataFrame({"c": [1.0, 1.0]}), ["c"])
         self.assertEqual(tt["unseen_categories_share"], {})

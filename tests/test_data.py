@@ -114,6 +114,23 @@ class PreprocessorTransformTest(unittest.TestCase):
         pre.transform(pd.DataFrame({"code": [1.5]}))
         self.assertEqual(pre.unseen_share_, {"code": 1.0})  # 1.5 действительно новая категория
 
+    def test_dates_become_numeric_parts(self):
+        # ревью Ивана (Y4): дата-строка становилась высококардинальной категорией
+        train = pd.DataFrame({"when": ["2020-01-01", "2020-01-02", "2020-03-15", None], "x": [1, 2, 3, 4]})
+        pre = TabularPreprocessor().fit(train)
+        self.assertEqual(pre.datetime_cols_, ["when"])
+        self.assertEqual(pre.feature_names_, ["when__days", "when__year", "when__month", "when__dayofweek", "x"])
+        out = pre.transform(pd.DataFrame({"when": ["2021-06-01"], "x": [5]}))
+        self.assertEqual(out.loc[0, "when__year"], 2021.0)
+        self.assertAlmostEqual(out.loc[0, "when__days"], (pd.Timestamp("2021-06-01") - pd.Timestamp("1970-01-01")).days)
+        self.assertTrue(pre.transform(train)["when__days"].isna().iloc[3])
+
+    def test_codes_and_numbers_are_not_dates(self):
+        from ml_data import parse_dates
+        self.assertIsNone(parse_dates(pd.Series(["A77", "B12", "C3"])))
+        self.assertIsNone(parse_dates(pd.Series([20200101, 20200102])))
+        self.assertIsNotNone(parse_dates(pd.Series(["01.02.2020", "15.03.2021"])))
+
     def test_mixed_type_column_becomes_text_categories(self):
         df = pd.DataFrame({"m": [1, "a", 1, "a", 2.5]})
         pre = TabularPreprocessor().fit(df)

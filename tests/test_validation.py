@@ -38,6 +38,24 @@ class SuggestTest(unittest.TestCase):
         for train, valid in splits:
             self.assertGreater(X.yr.iloc[train].min(), X.yr.iloc[valid].max())
 
+    def test_dates_with_many_values_use_late_blocks(self):
+        # ревью Ивана (Y4): по датам временная схема не включалась
+        columns = [{"name": "date", "dtype": "object", "kind": "datetime", "n_unique": 400}]
+        plan = mv.suggest_validation(profile_with("regression", {"date": 1.0}, columns, {"date": "above"}))
+        self.assertEqual((plan["strategy"], plan["column"]), ("temporal", "date"))
+        X = pd.DataFrame({"date": pd.date_range("2020-01-01", periods=400).strftime("%Y-%m-%d")})
+        splits = mv.make_splits(plan, X)
+        self.assertEqual(len(splits), 3)
+        days = pd.to_datetime(X["date"])
+        covered = np.concatenate([v for _, v in splits])
+        self.assertEqual(len(covered), len(set(covered)))
+        for train, valid in splits:
+            self.assertLess(days.iloc[train].max(), days.iloc[valid].min())
+            self.assertGreater(len(valid), 50)
+        backward = mv.make_splits({**plan, "direction": "backward"}, X)
+        for train, valid in backward:
+            self.assertGreater(days.iloc[train].min(), days.iloc[valid].max())
+
     def test_drift_on_both_sides_is_not_temporal(self):
         columns = [{"name": "yr", "dtype": "int64", "n_unique": 5}]
         plan = mv.suggest_validation(profile_with("regression", {"yr": 1.0}, columns, {"yr": "both"}))
