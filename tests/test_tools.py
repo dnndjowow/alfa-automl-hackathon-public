@@ -219,8 +219,10 @@ class SyntheticToolsTest(unittest.TestCase):
         self.assertTrue(any("custom_stopping=True" in n for n in default.notes), default.notes)
         result = mt.train_eval(split, profile, metric="f1_macro", custom_stopping=True, **FAST)
         self.assertTrue(any("ранняя остановка по f1_macro" in n for n in result.notes), result.notes)
-        native = mt.train_eval(split, profile, metric="accuracy", **FAST)
-        self.assertTrue(any("ранняя остановка по multi_error" in n for n in native.notes), native.notes)
+        step = mt.train_eval(split, profile, metric="accuracy", **FAST)
+        self.assertTrue(any("ступенями" in n for n in step.notes), step.notes)
+        native = mt.train_eval(split, profile, metric="logloss", **FAST)
+        self.assertTrue(any("ранняя остановка по multi_logloss" in n for n in native.notes), native.notes)
         split, profile, _ = self.prepare(kind="regression", n_train=300)
         split.y_train = split.y_train - split.y_train.min() + 1
         logged = mt.train_eval(split, profile, metric="mae", target_transform="log1p", **FAST)
