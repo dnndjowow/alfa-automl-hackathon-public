@@ -263,6 +263,41 @@ def _suggest_params(trial, model: str):
     return params, lr
 
 
+def choose_weights_for_metric(proba, codes, metric, groups=None, repeats=3, min_gain=0.002) -> dict:
+    """Веса классов (для двух классов — это порог) под произвольную метрику по меткам: подбор на одной части
+    OOF и проверка на другой; применяются, только если средний прирост на проверке не меньше min_gain."""
+    n_classes = proba.shape[1]
+    grid = np.geomspace(0.2, 5.0, 25)
+
+    def score(rows, weights):
+        return metric(codes[rows], (proba[rows] * weights).argmax(axis=1), labels=list(range(n_classes)))
+
+    def fit(rows):
+        weights = np.ones(n_classes)
+        best = score(rows, weights)
+        for _ in range(2):
+            for k in range(n_classes):
+                for value in grid:
+                    trial = weights.copy()
+                    trial[k] = value
+                    current = score(rows, trial)
+                    if current > best + 1e-6:
+                        best, weights = current, trial
+        return weights
+
+    gains = []
+    for seed in range(repeats):
+        fit_rows, check_rows = ml_postprocess._holdout_split(len(codes), 0.6, seed, groups)
+        if len(fit_rows) < 50 or len(check_rows) < 50:
+            return {"applied": False, "weights": np.ones(n_classes), "holdout_gain": 0.0}
+        weights = fit(fit_rows)
+        gains.append(score(check_rows, weights) - score(check_rows, np.ones(n_classes)))
+    gain = float(np.mean(gains))
+    if gain < min_gain:
+        return {"applied": False, "weights": np.ones(n_classes), "holdout_gain": gain}
+    return {"applied": True, "weights": fit(np.arange(len(codes))), "holdout_gain": gain}
+
+
 def _fit_args(method, args: dict):
     """Аргументы от LLM к сигнатуре инструмента: «n_trials-» -> n_trials, «hypothesisary» -> hypothesis
     (по префиксу), незнакомые ключи отбрасываются и возвращаются списком, а не роняют вызов."""
@@ -289,6 +324,42 @@ def _simplex_grid(k: int, steps: int) -> list:
             return [[left]]
         return [[i] + rest for i in range(left + 1) for rest in rec(left - i, parts - 1)]
     return [np.array(w, dtype=float) / steps for w in rec(steps, k)]
+
+
+_DATE_HINT = re.compile(r"\d{1,4}[-./]\d{1,2}[-./]\d{1,4}|\d{4}-\d{2}-\d{2}")
+
+
+def expand_dates(data) -> list:
+    """Строковые столбцы-даты (>= 90% значений разбираются) в train и test -> числовые части: год, месяц,
+    день, день недели, день года, час и дни от 1970. Исходный столбец убирается. Столбцы шаблона ответа
+    (id, таргет) не трогаются. Возвращает список разобранных столбцов."""
+    train, test = data.train, data.test
+    if train is None:
+        return []
+    protected = set(data.sample_submission.columns) if data.sample_submission is not None else set()
+    converted = []
+    for col in list(train.columns):
+        if col in protected or pd.api.types.is_numeric_dtype(train[col]):
+            continue
+        values = train[col].dropna().astype(str)
+        if len(values) == 0 or values.head(200).str.contains(_DATE_HINT).mean() < 0.9:
+            continue
+        frames = [f for f in (train, test) if f is not None and col in f.columns]
+        parsed = [pd.to_datetime(f[col], errors="coerce", format="mixed") for f in frames]
+        if parsed[0][train[col].notna()].notna().mean() < 0.9:
+            continue
+        for frame, stamp in zip(frames, parsed):
+            frame[f"{col}__year"] = stamp.dt.year
+            frame[f"{col}__month"] = stamp.dt.month
+            frame[f"{col}__day"] = stamp.dt.day
+            frame[f"{col}__dow"] = stamp.dt.dayofweek
+            frame[f"{col}__doy"] = stamp.dt.dayofyear
+            if (stamp.dt.hour.fillna(0) != 0).any():
+                frame[f"{col}__hour"] = stamp.dt.hour
+            frame[f"{col}__days"] = (stamp - pd.Timestamp("1970-01-01")).dt.days
+            del frame[col]
+        converted.append(col)
+    return converted
 
 
 class SubmissionError(ValueError):
@@ -349,6 +420,9 @@ class Session:
         self.log = log
         self.n_jobs, self.seed, self.auto_early = n_jobs, seed, auto_early
         self.data = ml_io.load_task(self.task_md)
+        self.date_columns = expand_dates(self.data)   # даты-строки -> числовые части до профиля
+        if self.date_columns:
+            log(f"[dates] разобраны как даты: {self.date_columns}")
         self.profile = ml_profile.build_profile(self.data)
         self.setup = None                 # выбранная постановка (set_task)
         self.runs = {}                    # run_id -> запуск текущей постановки
@@ -358,7 +432,8 @@ class Session:
         self.finished = None              # причина остановки от LLM
         self.history = []                 # короткий журнал вызовов
         self._counter = 0                 # номера запусков не повторяются даже после нового set_task
-        self._fits = {}                   # run_id -> обученные на всём train предсказания (для смесей)
+        self._fits = {}                   # (run_id, seed) -> обученные на всём train предсказания
+        self._fold_cache = {}             # (схема, таргет) -> номер фолда каждой строки train
 
     # ---- время ---------------------------------------------------------------
     def time_left(self) -> float:
@@ -376,7 +451,7 @@ class Session:
         result = run["result"]
         folds = max(1, len(result.get("fold_scores") or []))
         per_fold = result.get("seconds", 60.0) / folds / (run["config"]["subsample"] or 1.0)
-        return missing * (1.6 * per_fold + 30.0)
+        return missing * (1.6 * per_fold + 10.0)
 
     def can_finalize(self, run_id, seeds: int = 1) -> bool:
         return self.estimate_final_seconds(run_id, seeds) <= self.time_left() + self.final_slack
@@ -539,7 +614,7 @@ class Session:
                       "metric": resolved.name, "metric_obj": resolved, "higher_is_better": resolved.higher_is_better,
                       "prediction_format": prediction_format, "positive": positive, "reason": reason}
         self.plan, self.plan_key = plan, _validation_key(plan)
-        self.runs, self._fits = {}, {}
+        self.runs, self._fits, self._fold_cache = {}, {}, {}
         self.log(f"[set_task] target={list(schema.target_cols)} id={list(schema.id_cols)} {task_type} "
                  f"metric={resolved.name} features={len(schema.feature_cols)} validation={plan['strategy']}"
                  + (f" positive={ {t: _label_text(c) for t, c in positive.items()} }" if positive else ""))
@@ -742,6 +817,65 @@ class Session:
     def _is_better(self, new, old) -> bool:
         return ml_metrics.is_better(self.setup["metric_obj"], new, old)
 
+    def _fold_ids(self, target) -> np.ndarray:
+        """Номер фолда текущей схемы для каждой строки train (-1 — строка не проверялась). Разбиение
+        детерминировано (тот же план и сид, что в train_eval), поэтому OOF любого запуска раскладывается по фолдам."""
+        key = (self.plan_key, target)
+        if key not in self._fold_cache:
+            split = self.setup["splits"][target]
+            y = None
+            if self.setup["task_type"] != "regression":
+                y = ml_data.LabelCodec().fit(split.y_train).encode(split.y_train)
+            ids = np.full(len(split.X_train), -1)
+            try:
+                for number, (_, valid) in enumerate(ml_validation.make_splits(self.plan, split.X_train, y, seed=self.seed)):
+                    ids[valid] = number
+            except Exception:
+                pass
+            self._fold_cache[key] = ids
+        return self._fold_cache[key]
+
+    def _fold_metrics(self, target, index, pred) -> dict:
+        """Метрика задачи по каждому фолду: {номер фолда: значение}."""
+        folds = self._fold_ids(target)[np.asarray(index)]
+        out = {}
+        for number in np.unique(folds[folds >= 0]):
+            mask = folds == number
+            if mask.sum() >= 5:
+                try:
+                    out[int(number)] = self._oof_metric(target, np.asarray(index)[mask], np.asarray(pred)[mask])
+                except Exception:
+                    pass
+        return out
+
+    def _paired(self, new_id, old_id) -> Optional[dict]:
+        """Парное сравнение двух запусков по общим фолдам: относительные разницы (плюс — new лучше)."""
+        sign = 1.0 if self.setup["higher_is_better"] else -1.0
+        diffs = []
+        for target in self.setup["splits"]:
+            a = self._fold_metrics(target, *self._oof(new_id, target))
+            b = self._fold_metrics(target, *self._oof(old_id, target))
+            for fold in set(a) & set(b):
+                diffs.append(sign * (a[fold] - b[fold]) / max(abs(b[fold]), 1e-12))
+        if len(diffs) < 2:
+            return None
+        diffs = np.asarray(diffs)
+        se = float(diffs.std(ddof=1) / np.sqrt(len(diffs)))
+        return {"gain": float(diffs.mean()), "se": se, "wins": int((diffs > 0).sum()), "folds": len(diffs)}
+
+    def _significantly_better(self, new_id, old_id) -> bool:
+        """Новый запуск лучше, только если выигрыш устойчив по фолдам: среднее > 0.5·SE и победа в большинстве
+        фолдов. Без парных данных — обычное сравнение средних."""
+        if not self._is_better(self._score(new_id), self._score(old_id)):
+            return False
+        try:
+            paired = self._paired(new_id, old_id)
+        except Exception:
+            paired = None
+        if paired is None:
+            return True
+        return paired["gain"] > 0.5 * paired["se"] and paired["wins"] * 2 >= paired["folds"]
+
     def best_run(self) -> Optional[str]:
         """Лучший полный запуск на текущей схеме; если таких нет — на последней схеме с успешными."""
         full = self._ok_runs(full_only=True)
@@ -752,8 +886,8 @@ class Session:
         if not pool:
             pool = self._ok_runs()  # одни подвыборки — лучше, чем ничего
         best = None
-        for run_id in pool:
-            if best is None or self._is_better(self._score(run_id), self._score(best)):
+        for run_id in pool:   # в порядке появления: новый запуск сменяет лучший только при устойчивом выигрыше
+            if best is None or self._significantly_better(run_id, best):
                 best = run_id
         return best
 
@@ -773,6 +907,8 @@ class Session:
             return False
         if old["key"] != new["key"]:
             return not automatic
+        if automatic:
+            return self._significantly_better(run_id, written["run_id"])
         return self._is_better(self._score(run_id), self._score(written["run_id"]))
 
     # ---- внутреннее ----------------------------------------------------------
@@ -962,7 +1098,9 @@ class Session:
         setup, run = self.setup, self.runs[run_id]
         split = setup["splits"][target]
         labels = fit["pred"]
-        if mode == "off" or setup["metric"] != "f1_macro" or run["config"]["subsample"] or fit["proba"] is None:
+        metric = setup["metric_obj"]
+        if mode == "off" or metric.needs != "labels" or setup["metric"] == "accuracy" \
+                or run["config"]["subsample"] or fit["proba"] is None:
             return labels, None
         index, oof = self._oof(run_id, target)
         if oof is None or index is None or len(index) < 200:
@@ -971,7 +1109,10 @@ class Session:
             codec = ml_data.LabelCodec().fit(split.y_train)
             truth = codec.encode(split.y_train.iloc[index])
             groups = ml_validation.row_groups(split.X_train.iloc[index])
-            choice = ml_postprocess.choose_class_weights(oof, truth, groups=groups)
+            if setup["metric"] == "f1_macro":
+                choice = ml_postprocess.choose_class_weights(oof, truth, groups=groups)
+            else:   # бинарная F1, precision/recall, f1_weighted, balanced accuracy: веса = порог
+                choice = choose_weights_for_metric(np.asarray(oof), truth, metric, groups=groups)
             info = {"applied": bool(choice["applied"]), "holdout_gain": choice["holdout_gain"]}
             if choice["applied"]:
                 labels = codec.decode(ml_postprocess.apply_class_weights(fit["proba"], choice["weights"]))
@@ -994,7 +1135,8 @@ class Session:
         return metric(codes, pred, labels=list(range(len(codec.classes_))))
 
     def tool_blend(self, run_ids=None, reason=""):
-        """Смесь нескольких запусков: веса по OOF-предсказаниям на общей схеме валидации."""
+        """Смесь запусков текущей схемы по OOF: жадный отбор Caruana с возвратом и равновесное среднее топ-k;
+        берётся лучший вариант и создаётся, только если он устойчиво лучше лучшего одиночного запуска."""
         if self.setup is None:
             return {"ok": False, "error": "сначала вызовите set_task"}
         pool = [r for r in self._ok_runs(full_only=True) if self.runs[r]["key"] == self.plan_key
@@ -1003,55 +1145,91 @@ class Session:
             missing = [r for r in run_ids if r not in pool]
             if missing:
                 return {"ok": False, "error": f"{missing} не годятся: нужны успешные полные запуски текущей схемы {pool}"}
-            members = list(dict.fromkeys(run_ids))
+            candidates = list(dict.fromkeys(run_ids))
         else:
-            members = sorted(pool, key=lambda r: self._score(r), reverse=self.setup["higher_is_better"])[:4]
-        if len(members) < 2:
+            candidates = sorted(pool, key=lambda r: self._score(r), reverse=self.setup["higher_is_better"])[:10]
+        if len(candidates) < 2:
             return {"ok": False, "error": f"для смеси нужно хотя бы два успешных полных запуска; есть {pool}"}
-        grid = _simplex_grid(len(members), 10 if len(members) <= 4 else 5)
-        weights, oof, per_target, gain = {}, {}, {}, []
-        for target in self.setup["splits"]:
-            parts = [self._oof(m, target) for m in members]
-            common = parts[0][0]
-            for index, _ in parts[1:]:
-                common = np.intersect1d(common, index)
-            if len(common) < 20:
+        best_single = candidates[0]
+        for run_id in candidates[1:]:
+            if self._is_better(self._score(run_id), self._score(best_single)):
+                best_single = run_id
+        targets = list(self.setup["splits"])
+        aligned, commons = {}, {}
+        for target in targets:
+            parts = {m: self._oof(m, target) for m in candidates}
+            common = None
+            for index, _ in parts.values():
+                common = np.asarray(index) if common is None else np.intersect1d(common, index)
+            if common is None or len(common) < 20:
                 return {"ok": False, "error": "у запусков слишком мало общих OOF-строк"}
-            aligned = []
-            for index, pred in parts:
+            commons[target] = common
+            aligned[target] = {}
+            for m, (index, pred) in parts.items():
                 order = pd.Series(np.arange(len(index)), index=index).loc[common].to_numpy()
-                aligned.append(np.asarray(pred, dtype=float)[order])
-            singles = [self._oof_metric(target, common, p) for p in aligned]
-            best_w, best_s = None, None
-            for w in grid:
-                score = self._oof_metric(target, common, sum(wi * p for wi, p in zip(w, aligned)))
-                if best_s is None or self._is_better(score, best_s):
-                    best_w, best_s = w, score
-            best_single = singles[0]
-            for value in singles[1:]:
-                if self._is_better(value, best_single):
-                    best_single = value
-            weights[target] = [float(w) for w in best_w]
-            oof[target] = (common, sum(wi * p for wi, p in zip(best_w, aligned)))
-            per_target[target] = {"blend": best_s, "best_single": best_single,
-                                  "weights": dict(zip(members, [round(float(w), 2) for w in best_w]))}
-            gain.append(best_s - best_single)
-        blended = float(np.mean([v["blend"] for v in per_target.values()]))
-        single = float(np.mean([v["best_single"] for v in per_target.values()]))
-        if not self._is_better(blended, single):
-            return {"ok": False, "error": "смесь не лучше лучшего одиночного запуска на OOF", "per_target": per_target}
+                aligned[target][m] = np.asarray(pred, dtype=float)[order]
+
+        def score_of(weights: dict) -> float:
+            total = sum(weights.values())
+            values = []
+            for target in targets:
+                mix = sum(w * aligned[target][m] for m, w in weights.items()) / total
+                values.append(self._oof_metric(target, commons[target], mix))
+            return float(np.mean(values))
+
+        # Caruana: стартуем с лучшего, добавляем (с возвратом) то, что сильнее всего улучшает смесь
+        counts = {best_single: 1}
+        trail = [(dict(counts), score_of(counts))]
+        for _ in range(30):
+            step = None
+            for m in candidates:
+                trial = dict(counts)
+                trial[m] = trial.get(m, 0) + 1
+                value = score_of(trial)
+                if step is None or self._is_better(value, step[1]):
+                    step = (trial, value)
+            counts = step[0]
+            trail.append((dict(counts), step[1]))
+        caruana = trail[0]
+        for item in trail[1:]:
+            if self._is_better(item[1], caruana[1]):
+                caruana = item
+        options = [("caruana", caruana[0], caruana[1])]
+        for k in (2, 3, 4):
+            if len(candidates) >= k:
+                equal = {m: 1 for m in candidates[:k]}
+                options.append((f"equal_top{k}", equal, score_of(equal)))
+        kind, chosen, blended = options[0]
+        for option in options[1:]:
+            if self._is_better(option[2], blended):
+                kind, chosen, blended = option
+        members = [m for m in candidates if chosen.get(m)]
+        if len(members) < 2:
+            return {"ok": False, "error": f"смесь сводится к одному запуску {best_single}: она не лучше лучшего одиночного"}
+        total = sum(chosen.values())
+        weights = {t: [chosen[m] / total for m in members] for t in targets}
+        oof = {t: (commons[t], sum(w * aligned[t][m] for m, w in zip(members, weights[t]))) for t in targets}
         self._counter += 1
         run_id = f"b{self._counter}"
         seconds = float(sum(self.runs[m]["result"].get("seconds", 0) for m in members))
         self.runs[run_id] = {
             "config": {"model": "blend", "members": members, "weights": weights, "subsample": None, "params": {},
-                       "learning_rate": None, "target_transform": None, "max_rounds": 0},
+                       "learning_rate": None, "target_transform": None, "max_rounds": 0, "kind": kind},
             "result": {"status": "ok", "score": blended, "oof_score": blended, "fold_scores": [], "seconds": seconds,
                        "metric": self.setup["metric"], "model": "blend"},
             "eval": None, "oof": oof, "key": self.plan_key, "hypothesis": reason}
-        self.log(f"[blend {run_id}] {members} -> {blended} (лучший одиночный {single})")
-        return {"ok": True, "run_id": run_id, "members": members, "oof_score": blended, "best_single_oof": single,
-                "per_target": per_target, "best_run_id": self.best_run(),
+        paired = self._paired(run_id, best_single)
+        if not self._significantly_better(run_id, best_single):
+            del self.runs[run_id]
+            return {"ok": False, "error": "смесь не даёт устойчивого выигрыша над лучшим одиночным запуском",
+                    "best_single": best_single, "blend_oof": blended, "single_oof": self._score(best_single),
+                    "paired": paired}
+        self.log(f"[blend {run_id}] {kind} {dict(zip(members, [round(w, 2) for w in weights[targets[0]]]))} -> "
+                 f"{blended} (лучший одиночный {best_single} {self._score(best_single)}; {paired})")
+        return {"ok": True, "run_id": run_id, "kind": kind, "members": members,
+                "weights": {m: round(w, 3) for m, w in zip(members, weights[targets[0]])},
+                "oof_score": blended, "best_single": best_single, "best_single_oof": self._score(best_single),
+                "paired_vs_best_single": paired, "best_run_id": self.best_run(),
                 "note": "обучить и записать смесь: finalize(run_id)"}
 
     def _score(self, run_id):

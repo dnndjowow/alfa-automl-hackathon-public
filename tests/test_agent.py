@@ -405,6 +405,35 @@ class LLMArgumentTest(unittest.TestCase):
             self.assertLessEqual(summary["steps"], 8)
 
 
+class PlanItem2Test(unittest.TestCase):
+    def test_date_strings_become_numeric_parts(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(tmp, kind="regression", n_train=300)
+            folder = task.task_md.parent / "data" / "participants"
+            for name, start in (("train", "2020-01-01"), ("test", "2021-06-01")):
+                frame = pd.read_csv(folder / f"{name}.csv")
+                frame["signup"] = pd.date_range(start, periods=len(frame), freq="D").strftime("%Y-%m-%d")
+                frame.to_csv(folder / f"{name}.csv", index=False)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            self.assertEqual(session.date_columns, ["signup"])
+            self.assertIn("signup__days", session.data.train.columns)
+            self.assertNotIn("signup", session.data.test.columns)
+            self.assertTrue(pd.api.types.is_numeric_dtype(session.data.test["signup__year"]))
+            self.assertIn("id", session.data.test.columns)          # столбцы шаблона не трогаются
+
+    def test_threshold_for_binary_f1_on_imbalanced_classes(self):
+        rng = np.random.default_rng(0)
+        codes = (rng.random(3000) < 0.1).astype(int)
+        score = codes * 0.35 + rng.random(3000) * 0.6        # позитивы редкие, порог 0.5 для них слишком высок
+        proba = np.column_stack([1 - score, score])
+        metric = agent_tools._binary_metric("f1", 1)
+        choice = agent_tools.choose_weights_for_metric(proba, codes, metric)
+        self.assertTrue(choice["applied"], choice)
+        before = metric(codes, proba.argmax(axis=1))
+        after = metric(codes, (proba * choice["weights"]).argmax(axis=1))
+        self.assertGreater(after, before + 0.05)
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 

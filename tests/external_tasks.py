@@ -28,9 +28,10 @@ from sklearn import metrics as skm
 from sklearn.model_selection import train_test_split
 
 ROOT = Path(__file__).resolve().parent.parent
-OUT = ROOT / "data" / "external"
+# свой каталог на эксперимент: параллельные прогоны не должны перезаписывать задачи и скрытые ответы друг друга
+OUT = Path(os.environ.get("EXTERNAL_OUT", ROOT / "data" / "external"))
 TRUTH = OUT / "_truth"
-SEED = 0
+SEED = int(os.environ.get("EXTERNAL_SEED", 0))   # другой сид — другое разбиение train/test
 
 
 def openml(name, version):
@@ -350,7 +351,7 @@ def run(names, time_limit):
                    AGENT_LLM="on" if USE_LLM else "off")
         started = time.time()
         with open(task_dir / "run.log", "w", encoding="utf-8") as log:
-            code = subprocess.run([sys.executable, "-W", "ignore", str(ROOT / "solution.py"), "task.md"],
+            code = subprocess.run([sys.executable, "-W", "ignore", str(SOLUTION), "task.md"],
                                   cwd=task_dir, env=env, stdout=log, stderr=subprocess.STDOUT).returncode
         seconds = time.time() - started
         metric, value, const, problems = score(name)
@@ -361,7 +362,9 @@ def run(names, time_limit):
     return pd.DataFrame(rows)
 
 
-USE_LLM = "--llm" in sys.argv   # по умолчанию без LLM: прогоны не тратят общий бюджет ключа
+USE_LLM = "--llm" in sys.argv
+# замороженная копия кода для долгих сравнений: правки в репозитории не попадают в идущий эксперимент
+SOLUTION = Path(os.environ.get("EXTERNAL_SOLUTION", ROOT / "solution.py"))   # по умолчанию без LLM: прогоны не тратят общий бюджет ключа
 
 if __name__ == "__main__":
     argv = [a for a in sys.argv if a != "--llm"]

@@ -86,6 +86,10 @@ def improve(session) -> None:
     steps = [{"model": "lightgbm", "target_transform": transform, "hypothesis": "fallback: база"}]
     if nonneg_skewed and not log_metric:
         steps.append({"model": "lightgbm", "target_transform": "log1p", "hypothesis": "fallback: скошенный таргет"})
+    objective = {"mae": "l1", "mape": "mape"}.get(setup["metric"])
+    if objective:   # метрика по модулю ошибки: учим ту же функцию потерь
+        steps.append({"model": "lightgbm", "params": {"objective": objective}, "target_transform": transform,
+                      "hypothesis": f"fallback: objective {objective} под метрику {setup['metric']}"})
     steps += [{"model": "catboost", "hypothesis": "fallback: вторая модель"},
               {"model": "xgboost", "hypothesis": "fallback: третья модель"}]
     last = 0.0
@@ -113,9 +117,9 @@ def improve(session) -> None:
         best_single = best
     if best_single:
         config = session.runs[best_single]["config"]
-        reserve = session.estimate_final_seconds(best or best_single, 3) + 300
+        reserve = session.estimate_final_seconds(best or best_single, 3) + 120
         budget = 0.6 * (session.time_left() - reserve)
-        if budget > 120:
+        if budget > 120 and os.environ.get("AGENT_FALLBACK_TUNE", "on").lower() != "off":
             result = session.call("tune", {"model": config["model"], "n_trials": 40, "time_budget_s": budget,
                                            "target_transform": config["target_transform"], "hypothesis": "fallback"})
             log(f"[fallback] tune {config['model']}: ok={result.get('ok')} trials={result.get('trials')} "
