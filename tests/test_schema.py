@@ -191,6 +191,21 @@ class MetricMentionTest(unittest.TestCase):
         self.assertEqual((plain["primary"], plain["supported"], plain["higher_is_better"]), ("f1", False, True))
         self.assertEqual(ms.metric_family("f1"), "classification")
 
+    def test_metrics_outside_the_registry_are_named_not_replaced(self):
+        # N1: при основной RMSLE/MAPE ядро возвращало «первую упомянутую» RMSE/MAE
+        cases = {
+            "RMSLE — основная метрика соревнования. RMSE приводится для справки.": "rmsle",
+            "Основная метрика — RMSE между логарифмами прогноза и ответа.": "rmsle",
+            "MAPE является основной метрикой; MAE выводится для справки.": "mape",
+            "Основная метрика: symmetric mean absolute percentage error.": "smape",
+            "Основная метрика: mean squared log error. MSE для справки.": "msle",
+        }
+        for text, expected in cases.items():
+            found = ms.mentioned_metrics(text)
+            self.assertEqual((found["primary"], found["supported"], found["higher_is_better"]),
+                             (expected, False, False), text)
+            self.assertEqual(ms.metric_family(expected), "regression")
+
     def test_sklearn_call_with_macro_average_is_one_mention(self):
         found = ms.mentioned_metrics('f1_score(y_true, y_pred, average="macro")')
         self.assertEqual(found["mentioned"], ["f1_macro"])

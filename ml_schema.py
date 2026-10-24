@@ -44,11 +44,22 @@ _METRIC_PATTERNS = {
     "f1_micro": _f1_variant("micro"),
     "f1": r"\bf1(?:[\s_-]*(?:score|мера))?\b",
     "logloss": r"log[\s_-]*loss|cross[\s_-]*entropy",
+    "rmsle": r"\brmsle\b|root mean squared log\w*(?: error)?|rmse\s+(?:между\s+|of\s+(?:the\s+)?)(?:log|логарифм)\w*",
+    "msle": r"\bmsle\b|mean squared log\w* error",
+    "mape": r"\bmape\b|mean absolute percentage(?: error)?",
+    "smape": r"\bsmape\b|symmetric mean absolute(?: percentage)?(?: error)?",
     "average_precision": r"pr[\s_-]*auc|auc[\s_-]*pr\b|average[\s_-]+precision",
     "roc_auc": r"roc[\s_-]*auc|\bauc\b",
 }
-# Метрики, которые распознаются, но не считаются ядром (нужен выбор положительного класса).
-_UNSUPPORTED = {"f1": {"task": "classification", "higher_is_better": True}}
+# Метрики, которые распознаются, но не считаются ядром: бинарному F1 нужен выбор положительного
+# класса, RMSLE/MSLE/MAPE/SMAPE считает агент. Их всё равно надо называть основными, а не подменять.
+_UNSUPPORTED = {
+    "f1": {"task": "classification", "higher_is_better": True},
+    "rmsle": {"task": "regression", "higher_is_better": False},
+    "msle": {"task": "regression", "higher_is_better": False},
+    "mape": {"task": "regression", "higher_is_better": False},
+    "smape": {"task": "regression", "higher_is_better": False},
+}
 _SENTENCE_END = re.compile(r"[.;!?]|\n\s*\n")
 _PRIMARY_PHRASE = re.compile(
     r"основн\w*\s+метрик|метрик\w*\s+оценк|метрика\s*[—:-]|primary\s+metric|main\s+metric"
