@@ -18,7 +18,11 @@ import pandas as pd
 
 ROLES = ("train", "test", "sample_submission", "data_dictionary")
 
-_CSV_REF = re.compile(r"`([^`\n]+?\.csv)`", re.IGNORECASE)
+_CSV_REF = re.compile(r"`([^`\n]+?\.(?:csv|tsv))`", re.IGNORECASE)
+_TABLE_SUFFIXES = (".csv", ".tsv")
+# метки пропуска, которые встречаются в числовых столбцах чужих датасетов
+_MISSING_TOKENS = {"na", "n/a", "nan", "null", "none", "?", "-", "--", "#n/a"}
+_NUMERIC_SHARE = 0.95
 _SKIP_DIRS = {"__pycache__", "node_modules", "venv", "site-packages"}
 _MAX_DEPTH = 4
 
@@ -114,7 +118,7 @@ def _walk_csv(root: Path):
             d for d in dirnames if not d.startswith(".") and d not in _SKIP_DIRS
         ) if depth < _MAX_DEPTH else []
         for name in sorted(filenames):
-            if name.lower().endswith(".csv"):
+            if name.lower().endswith(_TABLE_SUFFIXES):
                 yield (Path(dirpath) / name).resolve()
 
 
@@ -159,29 +163,86 @@ def find_task_files(task_md) -> TaskFiles:
 
 
 def read_csv(path, text_columns=()) -> pd.DataFrame:
-    """CSV по правилам кейса: UTF-8, запятая, точка; пропуск — только пустая ячейка.
+    """Таблица по правилам кейса: UTF-8, запятая, точка; пропуск — пустая ячейка.
 
-    Строки вроде «NA», «None», «null» остаются значениями (это могут быть категории).
-    text_columns читаются как текст без преобразования в числа (например, коды «00123»).
+    Запасные варианты для чужих файлов: кодировка cp1251, если UTF-8 не читается; .tsv — табуляция;
+    если всё прочиталось одним столбцом с «;» или табуляцией в заголовке — разделитель определяется
+    автоматически. text_columns читаются как текст без преобразования в числа (коды «00123»).
     """
-    return pd.read_csv(
-        path, encoding="utf-8-sig", keep_default_na=False, na_values=[""], low_memory=False,
-        dtype={c: str for c in text_columns} or None,
-    )
+    path = Path(path)
+    options = dict(keep_default_na=False, na_values=[""], dtype={c: str for c in text_columns} or None)
+    sep = "\t" if path.suffix.lower() == ".tsv" else ","
+    frame, encoding = None, None
+    for encoding in ("utf-8-sig", "cp1251"):
+        try:
+            frame = pd.read_csv(path, sep=sep, encoding=encoding, low_memory=False, **options)
+            break
+        except UnicodeDecodeError:
+            continue
+    if frame is None:
+        raise TaskLoadError(f"{path.name}: не удалось прочитать ни в UTF-8, ни в cp1251")
+    if frame.shape[1] == 1 and any(mark in str(frame.columns[0]) for mark in (";", "\t", "|")):
+        frame = pd.read_csv(path, sep=None, engine="python", encoding=encoding, **options)
+    return frame
+
+
+def numeric_text_columns(frame: pd.DataFrame) -> list:
+    """Текстовые столбцы, которые на самом деле числовые: не меньше 95% непустых значений —
+    числа, остальное — метки пропуска («NA», «?», «null», пробелы) или единичный мусор."""
+    found = []
+    for col in frame.columns:
+        values = frame[col]
+        if pd.api.types.is_numeric_dtype(values) or pd.api.types.is_bool_dtype(values):
+            continue
+        text = values.dropna().astype(str).str.strip()
+        rest = text[~(text.eq("") | text.str.lower().isin(_MISSING_TOKENS))]
+        if len(rest) and pd.to_numeric(rest, errors="coerce").notna().mean() >= _NUMERIC_SHARE:
+            found.append(col)
+    return found
+
+
+def _to_numeric(values: pd.Series) -> pd.Series:
+    text = values.astype(str).str.strip().where(values.notna())
+    missing = text.isna() | text.eq("") | text.str.lower().isin(_MISSING_TOKENS)
+    return pd.to_numeric(text.where(~missing), errors="coerce")
+
+
+def _coerce(frame: pd.DataFrame, columns) -> pd.DataFrame:
+    frame = frame.copy()
+    for col in columns:
+        if col in frame.columns and not pd.api.types.is_numeric_dtype(frame[col]):
+            frame[col] = _to_numeric(frame[col])
+    return frame
 
 
 def load_task(task_md) -> TaskData:
     """Найти и прочитать все распознанные файлы задачи. Отсутствующие роли остаются None.
 
-    Тип столбца задаёт train: если там столбец текстовый, а в test он прочитался бы числами
-    («00123» -> 123), test перечитывается с этим столбцом как текстом.
+    Типы столбцов задаёт train:
+    - столбец, который почти весь из чисел и лишь местами содержит «NA», «?», «null» или пробелы,
+      переводится в числа (в train и test), а такие метки становятся пропусками. По условию кейса
+      пропуск — пустая ячейка; правило касается только явно числовых столбцов, текстовые
+      категории (в том числе значение «NA») не трогаются;
+    - если в train столбец текстовый, а в test он прочитался бы числами («00123» -> 123),
+      test перечитывается с этим столбцом как текстом.
     """
     files = find_task_files(task_md)
     data = TaskData(files=files, text=read_task_text(files.task_md))
     for role, path in files.paths.items():
         if path is not None:
             setattr(data, role, read_csv(path))
-    if data.train is not None and data.test is not None:
+    if data.train is None:
+        return data
+    numeric = numeric_text_columns(data.train)
+    if data.test is not None:
+        numeric += [c for c in data.test.columns
+                    if c in data.train.columns and c not in numeric
+                    and pd.api.types.is_numeric_dtype(data.train[c])
+                    and not pd.api.types.is_numeric_dtype(data.test[c])]
+    if numeric:
+        data.train = _coerce(data.train, numeric)
+        files.warnings.append(f"столбцы {numeric} переведены в числа: метки вроде 'NA', '?', 'null' — пропуски")
+    if data.test is not None:
         text_in_train = [
             c for c in data.test.columns
             if c in data.train.columns
@@ -191,4 +252,5 @@ def load_task(task_md) -> TaskData:
         if text_in_train:
             data.test = read_csv(files.paths["test"], text_columns=text_in_train)
             files.warnings.append(f"столбцы {text_in_train} в test прочитаны как текст, как в train")
+        data.test = _coerce(data.test, numeric)
     return data

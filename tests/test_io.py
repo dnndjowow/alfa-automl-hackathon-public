@@ -146,6 +146,50 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         self.assertEqual(files.warnings, [])
         self.assertEqual(files.extra_csv, [])
 
+    def write_task(self, files, text="`train.csv` `test.csv`"):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        (root / "task.md").write_text(text, encoding="utf-8")
+        for name, content in files.items():
+            (root / name).write_bytes(content if isinstance(content, bytes) else content.encode("utf-8"))
+        return root
+
+    def test_numbers_with_missing_markers_become_numeric(self):
+        # ревью Ивана (Y1): «NA», «?», «null» превращали числовой признак в категорию, а таргет ломали
+        rows = ["id,x,y,country"] + [f"{i},{i * 0.5},{i * 2},{'NA' if i % 3 else 'RU'}" for i in range(40)]
+        rows[5] = "4,NA,8,RU"
+        rows[6] = "5,?,null,RU"
+        rows[7] = "6, ,12,RU"
+        root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,x,country\n100,1.5,NA\n101,NA,RU\n"})
+        data = ml_io.load_task(root / "task.md")
+        self.assertTrue(pd.api.types.is_float_dtype(data.train["x"]))
+        self.assertTrue(pd.api.types.is_float_dtype(data.train["y"]))
+        self.assertEqual(int(data.train["x"].isna().sum()), 3)
+        self.assertTrue(pd.isna(data.train.loc[5, "y"]))
+        self.assertTrue(pd.isna(data.test.loc[1, "x"]))
+        self.assertEqual(set(data.train["country"]), {"NA", "RU"})  # настоящая категория «NA» не тронута
+        self.assertTrue(any("переведены в числа" in w for w in data.files.warnings))
+
+    def test_mostly_text_column_is_not_converted(self):
+        rows = ["id,code,y"] + [f"{i},{'A' + str(i) if i % 2 else str(i)},{i}" for i in range(20)]
+        data = ml_io.load_task(self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,code\n50,A3\n"}) / "task.md")
+        self.assertFalse(pd.api.types.is_numeric_dtype(data.train["code"]))
+
+    def test_semicolon_separator_cp1251_and_tsv(self):
+        # ревью Ивана (Y9): «;» читался одним столбцом, cp1251 падал, .tsv не искался
+        root = self.write_task({"train.csv": "id;x;y\n1;2;3\n2;3;4\n", "test.csv": "id;x\n3;4\n"})
+        self.assertEqual(list(ml_io.load_task(root / "task.md").train.columns), ["id", "x", "y"])
+        root = self.write_task({"train.csv": "id,город,y\n1,Москва,3\n2,Тула,4\n".encode("cp1251"),
+                                "test.csv": "id,город\n3,Москва\n".encode("cp1251")})
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(list(data.train.columns), ["id", "город", "y"])
+        self.assertEqual(data.train.loc[0, "город"], "Москва")
+        root = self.write_task({"train.tsv": "id\tx\ty\n1\t2\t3\n", "test.tsv": "id\tx\n3\t4\n"}, "`train.tsv` `test.tsv`")
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(list(data.train.columns), ["id", "x", "y"])
+        self.assertEqual(data.files.paths["test"].name, "test.tsv")
+
     def test_only_empty_cell_is_missing(self):
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
