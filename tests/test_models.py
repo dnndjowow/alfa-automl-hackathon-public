@@ -154,6 +154,26 @@ class BehaviourTest(unittest.TestCase):
             finally:
                 os.chdir(previous)
 
+    def test_round_synonyms_are_removed(self):
+        # ревью Ивана (Y6): early_stopping_round ронял fit без валидации, num_trees урезал модель
+        X, y = make_data("regression")
+        for params in ({"early_stopping_round": 10}, {"num_trees": 5}, {"n_estimators": 5}, {"iterations": 5}):
+            for name in ("lightgbm", "xgboost", "catboost"):
+                with self.subTest(params=params, name=name):
+                    m = model(name, "regression", params=params).fit(X, y, n_rounds=30)
+                    self.assertEqual(m.best_iteration_, 30)
+                    self.assertTrue(m.param_notes_)
+
+    def test_catboost_accepts_parameters_of_other_libraries(self):
+        # ревью Ивана (Y7): CatBoost падал на max_depth, colsample_bytree, min_child_weight, gamma, class_weight
+        X, y = make_data("classification", k=3)
+        params = {"max_depth": 4, "colsample_bytree": 0.8, "min_child_weight": 2, "gamma": 1,
+                  "class_weight": "balanced", "num_leaves": 31, "reg_lambda": 2.0}
+        m = model("catboost", "classification", n_classes=3, params=params).fit(X, y)
+        self.assertEqual(m.predict(X).shape, (400, 3))
+        self.assertEqual(m.params, {"depth": 4, "rsm": 0.8, "auto_class_weights": "Balanced", "l2_leaf_reg": 2.0})
+        self.assertEqual(len(m.param_notes_), 7)
+
     def test_errors(self):
         X, y = make_data("regression")
         with self.assertRaises(ModelError):

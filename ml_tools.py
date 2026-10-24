@@ -17,7 +17,7 @@ import pandas as pd
 import ml_metrics
 import ml_validation
 from ml_data import LabelCodec, SplitData, TabularPreprocessor
-from ml_models import BoostingModel
+from ml_models import BoostingModel, prepare_params
 
 TARGET_TRANSFORMS = (None, "log1p")
 
@@ -121,7 +121,7 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
         base = dict(model=model, task_type=kind, metric=resolved.name,
                     higher_is_better=resolved.higher_is_better, params=dict(params or {}))
         X, y = split.X_train, split.y_train
-        notes = []
+        notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
         positions = np.arange(len(X))  # позиции строк в исходном split.X_train
         if subsample is not None and subsample < 1.0:
             positions = np.sort(np.random.default_rng(seed).choice(len(X), max(2, int(len(X) * subsample)), replace=False))
@@ -244,7 +244,7 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
             raise ValueError("несколько таргетов пока не поддержаны")
         codec, target = _prepare_target(split.y_train, kind, target_transform)
         n_classes = len(codec.classes_) if codec else None
-        notes = []
+        notes = list(prepare_params(model, kind, params)[1]) if model in ("lightgbm", "xgboost", "catboost") else []
         if n_rounds is None:
             n_rounds, scheme = _auto_rounds(split.X_train, target, kind, profile, n_classes, model, params,
                                             n_jobs, seed, max_rounds, learning_rate,
