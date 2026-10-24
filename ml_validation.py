@@ -138,24 +138,66 @@ def make_splits(plan: dict, X: pd.DataFrame, y=None, seed: int = 0) -> list:
     n_splits = max(2, min(n_splits, n_rows))
     if strategy == "group":
         groups = row_groups(X)
-        n_splits = min(n_splits, len(np.unique(groups)))
+        n_groups = len(np.unique(groups))
+        n_splits = min(n_splits, n_groups)
         if n_splits < 2:
             raise ValidationError("меньше двух групп: групповая схема невозможна")
         if y is not None and plan.get("classification"):
-            folds = StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed).split(X, y, groups)
-            return Splits(folds, "group_stratified", n_splits)
+            return _group_stratified(np.asarray(y), groups, n_splits, seed)
         return Splits(GroupKFold(n_splits).split(X, y, groups), "group", n_splits)
-    note = None
     if strategy == "stratified":
         if y is None:
             raise ValidationError("для стратификации нужен y")
-        smallest = int(pd.Series(np.asarray(y)).value_counts().min())
-        if smallest >= 2:
-            if smallest < n_splits:
-                note = f"частей {smallest} вместо {n_splits}: в самом редком классе {smallest} строк"
-            n_splits = min(n_splits, smallest)
-            folds = StratifiedKFold(n_splits, shuffle=True, random_state=seed).split(X, y)
-            return Splits(folds, "stratified", n_splits, note)
-        note = "стратификация невозможна: есть класс из одной строки; использован обычный KFold"
-    return Splits(KFold(n_splits, shuffle=True, random_state=seed).split(X), "kfold", n_splits, note)
+        strata, note = _strata(np.asarray(y), n_splits)
+        folds = StratifiedKFold(n_splits, shuffle=True, random_state=seed).split(X, strata)
+        return Splits(folds, "stratified", n_splits, note)
+    return Splits(KFold(n_splits, shuffle=True, random_state=seed).split(X), "kfold", n_splits)
 
+
+def _strata(y: np.ndarray, n_splits: int):
+    """Метки для стратификации: классы реже n_splits строк объединяются в общую страту,
+    чтобы не уменьшать число частей (раньше класс из 2 строк оставлял 2 части)."""
+    labels = pd.Series(y).astype(str)
+    counts = labels.value_counts()
+    rare = counts[counts < n_splits].index
+    if len(rare) == 0:
+        return labels.to_numpy(), None
+    strata = labels.where(~labels.isin(rare), "__rare__")
+    if (strata == "__rare__").sum() < n_splits:
+        strata = strata.replace("__rare__", counts.index[0])  # даже вместе мало: к самому частому классу
+    note = f"классы {sorted(map(str, rare))[:10]} реже {n_splits} строк объединены в общую страту"
+    return strata.to_numpy(), note
+
+
+def _group_stratified(y: np.ndarray, groups: np.ndarray, n_splits: int, seed: int) -> Splits:
+    """Группы одинаковых строк не разрываются, доли классов сохраняются.
+
+    StratifiedGroupKFold медленный на больших данных, поэтому он применяется только к строкам,
+    у которых есть копии; строки без копий делятся обычным StratifiedKFold, и части объединяются."""
+    _, inverse, counts = np.unique(groups, return_inverse=True, return_counts=True)
+    copied = counts[inverse] > 1
+    single, multi = np.flatnonzero(~copied), np.flatnonzero(copied)
+    valid = [[] for _ in range(n_splits)]
+    if len(single) >= n_splits:
+        strata, _ = _strata(y[single], n_splits)
+        for i, (_, va) in enumerate(StratifiedKFold(n_splits, shuffle=True, random_state=seed).split(single, strata)):
+            valid[i].append(single[va])
+    else:
+        for i, idx in enumerate(single):
+            valid[i % n_splits].append(np.array([idx]))
+    if len(multi):
+        multi_groups = groups[multi]
+        if len(np.unique(multi_groups)) >= n_splits:
+            folds = StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed).split(multi, y[multi], multi_groups)
+            for i, (_, va) in enumerate(folds):
+                valid[i].append(multi[va])
+        else:
+            for i, g in enumerate(np.unique(multi_groups)):
+                valid[i % n_splits].append(multi[multi_groups == g])
+    everything = np.arange(len(y))
+    pairs = []
+    for parts in valid:
+        va = np.sort(np.concatenate(parts)) if parts else np.array([], dtype=int)
+        if len(va):
+            pairs.append((np.setdiff1d(everything, va), va))
+    return Splits(pairs, "group_stratified", len(pairs))

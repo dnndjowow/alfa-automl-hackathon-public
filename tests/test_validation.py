@@ -1,3 +1,4 @@
+import time
 import unittest
 from pathlib import Path
 
@@ -133,20 +134,39 @@ class SplitsTest(unittest.TestCase):
             self.assertEqual(set(y.iloc[valid]), {"a", "b", "c"})
         self.assertEqual(len(self.check_partition(splits, 100)), 100)
 
-    def test_stratified_with_a_very_rare_class_reduces_folds(self):
+    def test_rare_classes_keep_all_folds(self):
+        # ревью Ивана (Y11): класс из 2–4 строк сокращал валидацию до 2–4 частей
         y = pd.Series(["a"] * 95 + ["b"] * 3 + ["c"] * 2)
         splits = mv.make_splits({"strategy": "stratified", "n_splits": 5}, pd.DataFrame({"x": range(100)}), y)
-        self.assertEqual(len(splits), 2)
-        self.assertEqual(splits.effective()["strategy"], "stratified")
-        self.assertIn("2", splits.effective()["note"])
-
-    def test_singleton_class_falls_back_to_plain_kfold_and_says_so(self):
-        # ревью: откат на KFold был скрытым, план продолжал говорить «stratified»
-        y = pd.Series(["a"] * 99 + ["b"])
-        splits = mv.make_splits({"strategy": "stratified", "n_splits": 5}, pd.DataFrame({"x": range(100)}), y)
         self.assertEqual(len(splits), 5)
-        self.assertEqual(splits.effective()["strategy"], "kfold")
-        self.assertIn("одной строки", splits.effective()["note"])
+        self.assertEqual(splits.effective()["strategy"], "stratified")
+        self.assertIn("объединены", splits.effective()["note"])
+        self.assertEqual(len(self.check_partition(splits, 100)), 100)
+        rare_in_valid = [int(y.iloc[v].isin(["b", "c"]).sum()) for _, v in splits]
+        self.assertEqual(sum(rare_in_valid), 5)
+        self.assertLessEqual(max(rare_in_valid), 2)  # редкие строки разнесены по частям
+
+    def test_singleton_class_still_stratified(self):
+        y = pd.Series(["a"] * 70 + ["b"] * 29 + ["c"])
+        splits = mv.make_splits({"strategy": "stratified", "n_splits": 5}, pd.DataFrame({"x": range(100)}), y)
+        self.assertEqual((len(splits), splits.effective()["strategy"]), (5, "stratified"))
+        for _, valid in splits:
+            self.assertEqual(int(y.iloc[valid].eq("b").sum()) in (5, 6), True)
+
+    def test_group_stratified_is_fast_and_keeps_groups(self):
+        # ревью Ивана (Y12): StratifiedGroupKFold на всех строках — секунды на каждый train_eval
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame({"a": rng.integers(0, 30000, 50000), "b": rng.integers(0, 3, 50000)})
+        y = rng.integers(0, 10, 50000)
+        started = time.time()
+        splits = mv.make_splits({"strategy": "group", "n_splits": 5, "classification": True}, X, y)
+        elapsed = time.time() - started
+        self.assertEqual(len(splits), 5)
+        self.assertEqual(len(self.check_partition(splits, 50000)), 50000)
+        keys = pd.Series(mv.row_groups(X))
+        for train, valid in splits:
+            self.assertEqual(len(set(keys.iloc[train]) & set(keys.iloc[valid])), 0)
+        self.assertLess(elapsed, 1.5)
 
     def test_kfold_is_deterministic_for_a_seed(self):
         X = pd.DataFrame({"x": range(50)})
