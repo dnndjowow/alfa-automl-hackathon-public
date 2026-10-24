@@ -189,7 +189,6 @@ class GeneralizationTest(unittest.TestCase):
         self.assertEqual(res["metric"], "rmsle")
         sub = pd.read_csv(task.task_md.parent / "submission.csv")
         self.assertTrue((sub["y"] >= 0).all())
-        self.assertEqual(agent_tools.detect_extra_metric("Метрика — **RMSLE**"), "rmsle")
 
 
 class BlendTest(unittest.TestCase):
@@ -225,9 +224,11 @@ class BlendTest(unittest.TestCase):
         session.call("evaluate", {"model": "lightgbm", **FAST})
         self.assertFalse(session.call("blend", {})["ok"])
 
-    def test_log_rmse_phrase_is_rmsle(self):
-        self.assertEqual(agent_tools.detect_extra_metric("Качество — **RMSE между логарифмами** цены"), "rmsle")
-        self.assertIsNone(agent_tools.detect_extra_metric("Метрика — RMSE, меньше — лучше"))
+    def test_core_names_agent_metrics_as_primary(self):
+        import ml_schema
+        self.assertEqual(ml_schema.mentioned_metrics("Качество — **RMSE между логарифмами** цены")["primary"], "rmsle")
+        self.assertEqual(ml_schema.mentioned_metrics("RMSLE — основная метрика. RMSE для справки")["primary"], "rmsle")
+        self.assertEqual(ml_schema.mentioned_metrics("Метрика — RMSE, меньше — лучше")["primary"], "rmse")
 
 
 class CoreReviewWorkaroundTest(unittest.TestCase):
@@ -314,13 +315,12 @@ class SecondReviewTest(unittest.TestCase):
         self.assertTrue(set(sub["flag2"]) <= {0, 1})
         self.assertGreater(sub["y"].nunique(), 10)
 
-    def test_extra_metric_needs_to_be_the_named_one(self):
-        detect = agent_tools.detect_extra_metric
-        self.assertIsNone(detect("Метрика — RMSE (log-преобразование таргета разрешено).", "rmse"))
-        self.assertIsNone(detect("Evaluation metric: RMSE, log files are in logs/.", "rmse"))
-        self.assertIsNone(detect("Основная метрика — RMSE. Для информации также показывается MAPE.", "rmse"))
-        self.assertEqual(detect("Основная метрика — **MAPE**; RMSE показывается для справки.", "rmse"), "mape")
-        self.assertEqual(detect("Качество — **RMSE между логарифмами** цены", "rmse"), "rmsle")
+    def test_garbled_names_do_not_capture_other_parameters(self):
+        fitted, ignored = agent_tools._fit_args(agent_tools.Session.tool_evaluate,
+                                                {"learning_rate_decay": 0.9, "hypothesisary": "x", "modl": "catboost"})
+        self.assertNotIn("learning_rate", fitted)
+        self.assertEqual(fitted.get("hypothesis"), "x")
+        self.assertIn("learning_rate_decay", ignored)
 
     def test_compaction_keeps_a_single_summary(self):
         _, session = session_for(self.tmp, kind="regression")
@@ -406,20 +406,19 @@ class LLMArgumentTest(unittest.TestCase):
 
 
 class PlanItem2Test(unittest.TestCase):
-    def test_date_strings_become_numeric_parts(self):
+    def test_date_column_allowed_for_llm_temporal_validation(self):
         with tempfile.TemporaryDirectory() as tmp:
-            task = make_task(tmp, kind="regression", n_train=300)
+            task = make_task(tmp, kind="regression", n_train=400)
             folder = task.task_md.parent / "data" / "participants"
             for name, start in (("train", "2020-01-01"), ("test", "2021-06-01")):
                 frame = pd.read_csv(folder / f"{name}.csv")
                 frame["signup"] = pd.date_range(start, periods=len(frame), freq="D").strftime("%Y-%m-%d")
                 frame.to_csv(folder / f"{name}.csv", index=False)
             session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
-            self.assertEqual(session.date_columns, ["signup"])
-            self.assertIn("signup__days", session.data.train.columns)
-            self.assertNotIn("signup", session.data.test.columns)
-            self.assertTrue(pd.api.types.is_numeric_dtype(session.data.test["signup__year"]))
-            self.assertIn("id", session.data.test.columns)          # столбцы шаблона не трогаются
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            out = session.call("evaluate", {"model": "lightgbm", "validation": {"strategy": "temporal", "column": "signup"},
+                                            **FAST})
+            self.assertTrue(out["ok"], out)
 
     def test_threshold_for_binary_f1_on_imbalanced_classes(self):
         rng = np.random.default_rng(0)

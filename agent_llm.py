@@ -124,7 +124,9 @@ class OpenAIChat:
                 if status in (401, 403, 404):
                     raise LLMUnavailable(f"{type(error).__name__} {status}: {str(error)[:300]}", fatal=True)
                 text = str(error).lower()
-                if self.tools_supported and status in (400, 422) and ("tool" in text or "function" in text):
+                too_long = any(w in text for w in ("context", "length", "token", "too long", "maximum"))
+                if self.tools_supported and status in (400, 422) and ("tool" in text or "function" in text) \
+                        and not too_long:
                     # сервер не принимает tools: дальше вызовы инструментов читаются из текста ответа
                     self.tools_supported = False
                     try:

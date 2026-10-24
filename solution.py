@@ -180,6 +180,9 @@ def polish(session) -> None:
 def metric_family(metric):
     import agent_tools
     import ml_metrics
+    import re
+    if re.sub(r"[^a-z0-9]", "", str(metric).lower()) in agent_tools._BINARY_METRICS:
+        return "classification"   # бинарная f1/precision/recall: считает агент по положительному классу
     try:
         return agent_tools.resolve_metric(metric).task
     except ml_metrics.MetricError:

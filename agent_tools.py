@@ -35,7 +35,6 @@ import ml_validation
 from ml_models import MODELS
 
 TASK_TYPES = ("regression", "binary", "multiclass")
-PROBA_METRICS = ("roc_auc", "logloss")
 # параметры, которые задаёт сам код: потоки, сид, число раундов, запись файлов, GPU
 _RESERVED_PARAMS = {
     "n_jobs", "thread_count", "nthread", "num_threads", "verbose", "verbosity", "silent",
@@ -82,9 +81,6 @@ EXTRA_METRICS = {m.name: m for m in (
     ml_metrics.Metric("mape", _mape, False, "regression", "values"),
     ml_metrics.Metric("smape", _smape, False, "regression", "values"),
 )}
-_EXTRA_PATTERNS = {"rmsle": r"\brmsle\b|root mean squared log|rmse\s+(?:между\s+|of\s+(?:the\s+)?)(?:log|логарифм)",
-                   "msle": r"\bmsle\b|mean squared log", "mape": r"\bmape\b|mean absolute percentage",
-                   "smape": r"\bsmape\b|symmetric mean absolute"}
 _METRIC_ALIASES = {"gini": "roc_auc", "giniindex": "roc_auc", "rocaucscore": "roc_auc",
                    "multiclasslogloss": "logloss", "multilogloss": "logloss",
                    "rootmeansquaredlogarithmicerror": "rmsle", "meanabsolutepercentageerror": "mape"}
@@ -118,35 +114,6 @@ def _binary_metric(kind: str, positive_code: int) -> ml_metrics.Metric:
     def fn(yt, yp, labels):
         return float(scorer(np.asarray(yt) == positive_code, np.asarray(yp) == positive_code, zero_division=0))
     return ml_metrics.Metric(kind, fn, True, "classification", "labels")
-
-
-def detect_extra_metric(text: str, core_primary: Optional[str] = None) -> Optional[str]:
-    """Метрика из EXTRA_METRICS, упомянутая в условии (её не находит ml_schema).
-
-    Если ядро нашло основную метрику, своя побеждает, только если она ближе к фразе
-    «основная метрика / метрика — / качество —», чем метрика ядра."""
-    text = (text or "").replace("*", "").replace("`", "")
-    hits = []
-    for name, pattern in _EXTRA_PATTERNS.items():
-        match = re.search(pattern, text, flags=re.IGNORECASE)
-        if match:
-            hits.append((match.start(), name))
-    if not hits:
-        return None
-    if not core_primary:
-        return min(hits)[1]
-    core_pattern = getattr(ml_schema, "_METRIC_PATTERNS", {}).get(core_primary)
-    phrase = re.compile(getattr(ml_schema, "_PRIMARY_PHRASE").pattern + r"|качеств\w*\s*[—:-]", re.IGNORECASE)
-    for found in phrase.finditer(text):
-        after = text[found.end(): found.end() + 150]
-        core = re.search(core_pattern, after, flags=re.IGNORECASE) if core_pattern else None
-        extra = [(re.search(_EXTRA_PATTERNS[n], after, flags=re.IGNORECASE), n) for _, n in hits]
-        extra = [(m.start(), n) for m, n in extra if m]
-        if extra and (core is None or min(extra)[0] <= core.start()):
-            return min(extra)[1]
-        if core is not None:
-            return None
-    return None
 
 
 def _short(text, limit=_TEXT_LIMIT):
@@ -402,8 +369,10 @@ def _fit_args(method, args: dict):
         if norm in names:
             target = norm
         else:
-            close = [n for n in names if len(norm) >= 4 and (norm.startswith(n) or n.startswith(norm))]
-            target = max(close, key=len) if len(close) >= 1 else None
+            # «hypothesisary» -> hypothesis, «hypoth» -> hypothesis; но «learning_rate_decay» — другой параметр
+            close = [n for n in names if len(norm) >= 4 and (
+                (norm.startswith(n) and "_" not in norm[len(n):] and len(norm) - len(n) <= 4) or n.startswith(norm))]
+            target = max(close, key=len) if close else None
         if target is None or target in fitted:
             ignored.append(str(key))
         else:
@@ -418,42 +387,6 @@ def _simplex_grid(k: int, steps: int) -> list:
             return [[left]]
         return [[i] + rest for i in range(left + 1) for rest in rec(left - i, parts - 1)]
     return [np.array(w, dtype=float) / steps for w in rec(steps, k)]
-
-
-_DATE_HINT = re.compile(r"\d{1,4}[-./]\d{1,2}[-./]\d{1,4}|\d{4}-\d{2}-\d{2}")
-
-
-def expand_dates(data) -> list:
-    """Строковые столбцы-даты (>= 90% значений разбираются) в train и test -> числовые части: год, месяц,
-    день, день недели, день года, час и дни от 1970. Исходный столбец убирается. Столбцы шаблона ответа
-    (id, таргет) не трогаются. Возвращает список разобранных столбцов."""
-    train, test = data.train, data.test
-    if train is None:
-        return []
-    protected = set(data.sample_submission.columns) if data.sample_submission is not None else set()
-    converted = []
-    for col in list(train.columns):
-        if col in protected or pd.api.types.is_numeric_dtype(train[col]):
-            continue
-        values = train[col].dropna().astype(str)
-        if len(values) == 0 or values.head(200).str.contains(_DATE_HINT).mean() < 0.9:
-            continue
-        frames = [f for f in (train, test) if f is not None and col in f.columns]
-        parsed = [pd.to_datetime(f[col], errors="coerce", format="mixed") for f in frames]
-        if parsed[0][train[col].notna()].notna().mean() < 0.9:
-            continue
-        for frame, stamp in zip(frames, parsed):
-            frame[f"{col}__year"] = stamp.dt.year
-            frame[f"{col}__month"] = stamp.dt.month
-            frame[f"{col}__day"] = stamp.dt.day
-            frame[f"{col}__dow"] = stamp.dt.dayofweek
-            frame[f"{col}__doy"] = stamp.dt.dayofyear
-            if (stamp.dt.hour.fillna(0) != 0).any():
-                frame[f"{col}__hour"] = stamp.dt.hour
-            frame[f"{col}__days"] = (stamp - pd.Timestamp("1970-01-01")).dt.days
-            del frame[col]
-        converted.append(col)
-    return converted
 
 
 class SubmissionError(ValueError):
@@ -514,9 +447,6 @@ class Session:
         self.log = log
         self.n_jobs, self.seed, self.auto_early = n_jobs, seed, auto_early
         self.data = ml_io.load_task(self.task_md)
-        self.date_columns = expand_dates(self.data)   # даты-строки -> числовые части до профиля
-        if self.date_columns:
-            log(f"[dates] разобраны как даты: {self.date_columns}")
         self.profile = ml_profile.build_profile(self.data)
         self.setup = None                 # выбранная постановка (set_task)
         self.runs = {}                    # run_id -> запуск текущей постановки
@@ -553,15 +483,15 @@ class Session:
     # ---- обзор задачи -------------------------------------------------------
     def overview(self, max_columns: int = 60) -> dict:
         schema = self.profile["schema"]
-        extra = self.suggested_extra_metric()
         return {
             "profile_text": ml_profile.format_profile(self.profile, max_columns=max_columns),
             "suggested": {
                 "target_cols": schema["target_cols"], "id_cols": schema["id_cols"],
                 "output_columns": schema["output_columns"], "confidence": schema["confidence"],
                 "task_type": self.profile.get("task", {}).get("type"),
-                "metric": extra or self.profile["metric"].get("primary"),
-                "metric_source": "своя метрика агента" if extra else self.profile["metric"].get("source"),
+                "metric": self.suggested_metric(),
+                "metric_source": self.profile["metric"].get("source"),
+                "metric_computed_by": "агент" if self.profile["metric"].get("supported") is False else "ядро",
                 "answer_looks_like_probability": self.sample_suggests_proba(),
             },
             "all_train_columns": [str(c) for c in self.data.train.columns] if self.data.train is not None else [],
@@ -573,13 +503,10 @@ class Session:
             "time_left_s": round(self.time_left()),
         }
 
-    def suggested_extra_metric(self) -> Optional[str]:
-        """Своя метрика агента, если условие называет её основной (RMSLE, MAPE, бинарная F1)."""
-        core = self.profile["metric"].get("primary")
-        extra = detect_extra_metric(self.data.text, core)
-        if not extra and not core and re.search(r"\bf1\b", self.data.text or "", re.I):
-            extra = "f1"
-        return extra
+    def suggested_metric(self) -> Optional[str]:
+        """Основная метрика из task.md по ядру (mentioned_metrics): ядро называет и те, что считает агент
+        (rmsle/msle/mape/smape, бинарная f1), с supported=False."""
+        return self.profile["metric"].get("primary")
 
     def sample_suggests_proba(self) -> bool:
         """Похоже ли, что ответ — вероятность, когда метрика неизвестна: дробная заглушка в шаблоне при
@@ -1077,8 +1004,9 @@ class Session:
         if strategy == "temporal":
             column = validation.get("column") or (self.plan.get("column") if self.plan["strategy"] == "temporal" else None)
             X = self.setup["split"].X_train
-            if column not in X.columns or not pd.api.types.is_numeric_dtype(X[column]):
-                return None, f"для temporal нужен числовой признак column; {column!r} не подходит"
+            kinds = {c["name"]: c.get("kind") for c in self.profile.get("features", {}).get("columns", [])}
+            if column not in X.columns or not (pd.api.types.is_numeric_dtype(X[column]) or kinds.get(column) == "datetime"):
+                return None, f"для temporal нужен числовой признак времени или дата в column; {column!r} не подходит"
             direction = validation.get("direction") or "forward"
             if direction not in ("forward", "backward"):
                 return None, "direction: forward | backward"
@@ -1486,7 +1414,7 @@ class Session:
                     if len(classes) == 2:
                         positive[target] = guess_positive_class(classes, y, self.data.text)
             setup = {"schema": schema, "split": split, "task_type": task_type, "positive": positive,
-                     "metric": self.suggested_extra_metric() or self.profile["metric"].get("primary") or "",
+                     "metric": self.suggested_metric() or "",
                      "prediction_format": "auto"}
             frame, notes = self._assemble(setup, predictions)
             write_submission(frame, self.task_dir, len(split.X_test), schema.id_cols)
