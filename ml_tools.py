@@ -39,7 +39,7 @@ class EvalResult:
     params: dict = field(default_factory=dict)
     notes: list = field(default_factory=list)
     error: Optional[str] = None
-    classes: Optional[list] = None
+    classes: Optional[list] = None   # исходные метки классов в порядке столбцов oof_pred (как fit_predict)
     oof_index: Optional[np.ndarray] = None   # позиции строк train, попавшие в проверку
     oof_pred: Optional[np.ndarray] = None    # значения (регрессия) или вероятности (n, K) в порядке oof_index
 
@@ -182,7 +182,7 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
             oof_score=_score(resolved, truth_all, oof, kind, n_classes),
             fold_scores=[float(s) for s in fold_scores], best_iterations=iterations, train_sizes=sizes,
             seconds=time.time() - started, validation=plan, notes=notes,
-            classes=[str(c) for c in codec.classes_] if codec else None,
+            classes=list(codec.classes_) if codec else None,  # исходные метки, как в fit_predict
             oof_index=positions[index], oof_pred=oof, **base,
         )
     except Exception as error:

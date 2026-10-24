@@ -226,6 +226,17 @@ class SyntheticToolsTest(unittest.TestCase):
         logged = mt.train_eval(split, profile, metric="mae", target_transform="log1p", **FAST)
         self.assertFalse(any("ранняя остановка" in n for n in logged.notes))  # при log1p — метрика библиотеки
 
+    def test_classes_keep_original_label_types_in_eval_and_fit(self):
+        # просьба Ивана (R6): классы одного типа в train_eval и fit_predict, числовые метки остаются числами
+        split, profile, _ = self.prepare(kind="multiclass", n_train=300)
+        codes = {name: i for i, name in enumerate(sorted(split.y_train.unique()))}
+        split.y_train = split.y_train.map(codes)  # целые метки 0, 1, 2
+        ev = mt.train_eval(split, profile, **FAST)
+        fp = mt.fit_predict(split, profile, n_rounds=20, **FAST)
+        self.assertEqual(ev.classes, fp["classes"])
+        self.assertTrue(all(isinstance(c, (int, np.integer)) for c in ev.classes))
+        self.assertTrue(all(isinstance(c, (int, np.integer)) for c in fp["classes"]))
+
     def test_fit_predict_rejects_unknown_transform(self):
         split, profile, _ = self.prepare(kind="regression")
         self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")
