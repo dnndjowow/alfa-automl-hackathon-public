@@ -83,6 +83,16 @@ class ClassificationMetricsTest(unittest.TestCase):
         expected = skm.roc_auc_score(y, proba, multi_class="ovr", average="macro", labels=["x", "y", "z"])
         self.assertAlmostEqual(mm.compute("roc_auc", y, proba, labels=["x", "y", "z"]), expected)
 
+    def test_average_precision_binary_and_multiclass(self):
+        y, p = [0, 0, 1, 1], [0.1, 0.4, 0.35, 0.8]
+        self.assertAlmostEqual(mm.compute("average_precision", y, p), skm.average_precision_score(y, p))
+        self.assertEqual(mm.get_metric("PR-AUC").name, "average_precision")
+        rng = np.random.default_rng(2)
+        yy = np.array(["x", "y", "z"] * 20)
+        proba = rng.dirichlet(np.ones(3), size=60)
+        expected = np.mean([skm.average_precision_score(yy == c, proba[:, k]) for k, c in enumerate("xyz")])
+        self.assertAlmostEqual(mm.compute("average_precision", yy, proba, labels=["x", "y", "z"]), expected)
+
     def test_roc_auc_column_count_mismatch(self):
         with self.assertRaises(mm.MetricError):
             mm.compute("roc_auc", ["a", "b", "c"], np.full((3, 2), 0.5))

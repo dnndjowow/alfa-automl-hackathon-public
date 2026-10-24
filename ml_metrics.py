@@ -77,6 +77,18 @@ def _roc_auc(yt, proba, labels):
     )
 
 
+def _average_precision(yt, proba, labels):
+    """PR-AUC: бинарно — по второму классу; для нескольких классов — среднее по классам, присутствующим в y_true."""
+    proba = _proba_2d(proba)
+    classes = np.asarray(labels) if labels is not None else np.unique(yt)
+    if proba.shape[1] != len(classes):
+        raise MetricError(f"столбцов вероятностей {proba.shape[1]}, а классов {len(classes)}: передайте labels")
+    if len(classes) == 2:
+        return float(skm.average_precision_score(yt == classes[1], proba[:, 1]))
+    present = [k for k, c in enumerate(classes) if (yt == c).any()]
+    return float(np.mean([skm.average_precision_score(yt == classes[k], proba[:, k]) for k in present]))
+
+
 @dataclass(frozen=True)
 class Metric:
     name: str
@@ -140,6 +152,7 @@ _METRICS = {
         Metric("f1_micro", _f1("micro"), True, "classification", "labels"),
         Metric("logloss", _logloss, False, "classification", "proba"),
         Metric("roc_auc", _roc_auc, True, "classification", "proba"),
+        Metric("average_precision", _average_precision, True, "classification", "proba"),
     )
 }
 
@@ -161,6 +174,8 @@ _ALIASES = {
     "crossentropy": "logloss",
     "logarithmicloss": "logloss",
     "auc": "roc_auc",
+    "prauc": "average_precision",
+    "aucpr": "average_precision",
     "aucroc": "roc_auc",
 }
 

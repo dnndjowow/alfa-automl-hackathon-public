@@ -153,6 +153,35 @@ class RoleOverlapTest(unittest.TestCase):
 
 
 class MetricMentionTest(unittest.TestCase):
+    def test_primary_metric_before_or_after_the_phrase(self):
+        # ревью Ивана (Y2): метрика искалась только после фразы «основная метрика»
+        cases = {
+            "Macro F1 — основная метрика соревнования. Accuracy приводится для справки.": "f1_macro",
+            "MAE является основной метрикой; RMSE выводится для справки.": "mae",
+            "Решения ранжируются по ROC AUC (основная метрика). Также считаем logloss.": "roc_auc",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(ms.mentioned_metrics(text)["primary"], expected, text)
+
+    def test_metric_spellings(self):
+        # ревью Ивана (Y3): написания macro F1, PR-AUC, бинарный F1, R^2
+        cases = {
+            "Основная метрика: macro-averaged F1. Accuracy тоже считаем.": "f1_macro",
+            "Метрика — F1-score (macro). Также смотрим accuracy.": "f1_macro",
+            "Основная метрика — F1-мера (macro).": "f1_macro",
+            "Основная метрика — PR-AUC (average precision).": "average_precision",
+            "Метрика — R^2.": "r2",
+        }
+        for text, expected in cases.items():
+            self.assertEqual(ms.mentioned_metrics(text)["primary"], expected, text)
+        plain = ms.mentioned_metrics("Основная метрика: F1-score.")
+        self.assertEqual((plain["primary"], plain["supported"], plain["higher_is_better"]), ("f1", False, True))
+        self.assertEqual(ms.metric_family("f1"), "classification")
+
+    def test_sklearn_call_with_macro_average_is_one_mention(self):
+        found = ms.mentioned_metrics('f1_score(y_true, y_pred, average="macro")')
+        self.assertEqual(found["mentioned"], ["f1_macro"])
+
     def test_balanced_accuracy_before_primary_accuracy(self):
         # ревью: замена текста сдвигала позиции, и основной выбиралась balanced_accuracy
         found = ms.mentioned_metrics("Дополнительно balanced accuracy. Основная метрика — accuracy.")
