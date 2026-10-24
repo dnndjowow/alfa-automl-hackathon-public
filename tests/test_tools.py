@@ -237,6 +237,17 @@ class SyntheticToolsTest(unittest.TestCase):
         self.assertTrue(all(isinstance(c, (int, np.integer)) for c in ev.classes))
         self.assertTrue(all(isinstance(c, (int, np.integer)) for c in fp["classes"]))
 
+    def test_fit_predict_reports_stop_by_time(self):
+        # просьба Ивана (R4): понять, что финальное обучение урезано бюджетом, без сравнения числа раундов
+        split, profile, _ = self.prepare(kind="regression", n_train=2000)
+        normal = mt.fit_predict(split, profile, n_rounds=30, **FAST)
+        self.assertIs(normal["stopped_by_time"], False)
+        cut = mt.fit_predict(split, profile, n_rounds=100000, max_rounds=100000, learning_rate=0.01,
+                             n_jobs=2, time_budget=0.3)
+        self.assertEqual(cut["status"], "ok", cut.get("error"))
+        self.assertIs(cut["stopped_by_time"], True)
+        self.assertLess(cut["n_rounds"], 100000)
+
     def test_fit_predict_rejects_unknown_transform(self):
         split, profile, _ = self.prepare(kind="regression")
         self.assertEqual(mt.fit_predict(split, profile, target_transform="sqrt", **FAST)["status"], "error")

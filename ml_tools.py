@@ -268,6 +268,7 @@ def fit_predict(split: SplitData, profile: dict, model: str = "lightgbm", n_roun
         boosting.fit(X_tr, target, n_rounds=n_rounds)
         raw = boosting.predict(X_te)
         out = {"status": "ok", "model": model, "task_type": kind, "n_rounds": boosting.best_iteration_,
+               "stopped_by_time": bool(boosting.stopped_by_time_),  # True — обучение прервано по time_budget
                "seconds": time.time() - started, "notes": notes,
                "warnings": list(pre.warnings_) + list(split.warnings)}
         if kind == "regression":
