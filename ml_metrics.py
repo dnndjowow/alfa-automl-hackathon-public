@@ -72,9 +72,13 @@ def _roc_auc(yt, proba, labels):
         )
     if len(classes) == 2:
         return float(skm.roc_auc_score(yt == classes[1], proba[:, 1]))
-    return float(
-        skm.roc_auc_score(yt, proba, multi_class="ovr", average="macro", labels=classes)
-    )
+    # one-vs-rest по классам, которые есть в y_true: при всех классах это совпадает с
+    # roc_auc_score(multi_class="ovr", average="macro"), а часть валидации без редкого класса
+    # не выбрасывается
+    present = [k for k, c in enumerate(classes) if (yt == c).any()]
+    if len(present) < 2:
+        raise MetricError("для ROC AUC в y_true нужно хотя бы два класса")
+    return float(np.mean([skm.roc_auc_score(yt == classes[k], proba[:, k]) for k in present]))
 
 
 def _average_precision(yt, proba, labels):
