@@ -93,6 +93,7 @@ def improve(session) -> None:
     steps += [{"model": "catboost", "hypothesis": "fallback: вторая модель"},
               {"model": "xgboost", "hypothesis": "fallback: третья модель"}]
     last = 0.0
+    auto_features = True
     for step in steps:
         if step["model"] != "lightgbm" or step is not steps[0]:
             best = session.best_run()
@@ -109,6 +110,9 @@ def improve(session) -> None:
         last = time.monotonic() - started
         if not result.get("ok"):
             log(f"[fallback] evaluate {step['model']}: {result.get('error')}")
+        if auto_features and session._ok_runs(full_only=True):
+            auto_features = False
+            add_safe_features(session, last)
     blend(session)
     best = session.best_run()
     if best and session.runs[best]["config"]["model"] == "blend":
@@ -125,6 +129,26 @@ def improve(session) -> None:
             log(f"[fallback] tune {config['model']}: ok={result.get('ok')} trials={result.get('trials')} "
                 f"best={result.get('best', {}).get('score')}")
             blend(session)
+
+
+def add_safe_features(session, base_seconds) -> None:
+    """Без LLM: частоты категорий и число пропусков — дешёвые признаки без смысла задачи; принимаются кодом
+    только при устойчивом выигрыше на тех же фолдах."""
+    if session.time_left() < 4 * base_seconds + 300:
+        return
+    X = session.setup["split"].X_train
+    categorical = [c for c in X.columns if not pd_numeric(X[c]) and X[c].nunique() > 2][:15]
+    specs = [{"op": "count", "col": c} for c in categorical]
+    if X.isna().any(axis=1).mean() > 0.05:
+        specs.append({"op": "nan_count"})
+    if specs:
+        result = session.call("add_features", {"features": specs, "hypothesis": "fallback: частоты и пропуски"})
+        log(f"[fallback] add_features: accepted={result.get('accepted')} {result.get('error', '')}")
+
+
+def pd_numeric(series) -> bool:
+    import pandas as pd
+    return pd.api.types.is_numeric_dtype(series)
 
 
 def _rank(session, run_id):

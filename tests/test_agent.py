@@ -434,6 +434,48 @@ class PlanItem2Test(unittest.TestCase):
         self.assertGreater(after, before + 0.05)
 
 
+class AddFeaturesTest(unittest.TestCase):
+    def make(self, tmp):
+        task = make_task(tmp, kind="regression", n_train=1500, n_test=300)
+        folder = task.task_md.parent / "data" / "participants"
+        rng = np.random.default_rng(1)
+        for name in ("train", "test"):
+            frame = pd.read_csv(folder / f"{name}.csv")
+            frame["num"] = rng.uniform(1, 10, len(frame))
+            frame["den"] = rng.uniform(1, 10, len(frame))
+            if name == "train":
+                frame["y"] = 5 * frame["num"] / frame["den"] + rng.normal(0, 0.05, len(frame))
+            frame.to_csv(folder / f"{name}.csv", index=False)
+        return task
+
+    def test_useful_ratio_is_accepted_and_used_in_final_answer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self.make(tmp)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            out = session.call("add_features", {"features": ["num / den", {"op": "count", "col": "cat"}, "nope / den"],
+                                                "hypothesis": "y — отношение"})
+            self.assertTrue(out["ok"] and out["accepted"], out)
+            self.assertIn("num__ratio__den", out["features"])
+            self.assertEqual(len(out["errors"]), 1)                       # 'nope' — понятная ошибка, не падение
+            self.assertIn("num__ratio__den", session.setup["split"].X_test.columns)
+            fin = session.call("finalize", {"run_id": out["new_run"]})
+            self.assertTrue(fin["ok"], fin)
+            base_fin = session._fit_run(out["base_run"])                   # старый запуск — на старых признаках
+            self.assertEqual(len(base_fin["y"]["pred"]), 300)
+
+    def test_useless_feature_leaves_data_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self.make(tmp)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            columns = list(session.setup["split"].X_train.columns)
+            out = session.call("add_features", {"features": [{"op": "nan_count"}]})
+            if not out["accepted"]:
+                self.assertEqual(list(session.setup["split"].X_train.columns), columns)
+                self.assertEqual(session.featureset, 0)
+
+
 class RobustnessTest(unittest.TestCase):
     """Сценарии, найденные ревью: каждый раньше портил ответ или ронял агента."""
 

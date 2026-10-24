@@ -298,6 +298,100 @@ def choose_weights_for_metric(proba, codes, metric, groups=None, repeats=3, min_
     return {"applied": True, "weights": fit(np.arange(len(codes))), "holdout_gain": gain}
 
 
+FEATURE_GRAMMAR = {
+    "ratio/diff/prod/sum": {"op": "ratio", "a": "числовой столбец", "b": "числовой столбец"},
+    "group_mean/group_std/group_dev/group_count": {"op": "group_dev", "col": "числовой столбец",
+                                                    "by": "категориальный столбец"},
+    "count": {"op": "count", "col": "любой столбец (частота значения)"},
+    "cross": {"op": "cross", "a": "категория", "b": "категория"},
+    "nan_count": {"op": "nan_count"},
+}
+_FORMULA = re.compile(r"^\s*([\w.]+)\s*([-+*/])\s*([\w.]+)\s*$")
+
+
+def _parse_feature(spec):
+    """Спецификация признака: словарь грамматики или формула вида «a / b»."""
+    if isinstance(spec, str):
+        match = _FORMULA.match(spec)
+        if not match:
+            raise ValueError(f"не понимаю {spec!r}; формулы вида a/b, a-b, a*b, a+b или словарь {FEATURE_GRAMMAR}")
+        a, sign, b = match.groups()
+        return {"op": {"/": "ratio", "-": "diff", "*": "prod", "+": "sum"}[sign], "a": a, "b": b}
+    if not isinstance(spec, dict) or "op" not in spec:
+        raise ValueError(f"нужен словарь с op: {list(FEATURE_GRAMMAR)}")
+    return spec
+
+
+def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list):
+    """Посчитать признаки на train и test вместе (только по признакам, без таргета).
+    Возвращает (X_train, X_test, применённые [{name, spec}], ошибки)."""
+    both = pd.concat([X_train, X_test], axis=0, ignore_index=True)
+    n_train = len(X_train)
+    applied, errors, new = [], [], {}
+
+    def numeric(col):
+        if col not in both.columns:
+            raise ValueError(f"нет столбца {col!r}")
+        values = pd.to_numeric(both[col], errors="coerce")
+        if values.notna().mean() < 0.5:
+            raise ValueError(f"{col!r} не числовой")
+        return values.astype(float)
+
+    for raw in specs:
+        try:
+            spec = _parse_feature(raw)
+            op = str(spec["op"]).lower()
+            if op in ("ratio", "diff", "prod", "sum"):
+                a, b = numeric(spec["a"]), numeric(spec["b"])
+                name = f"{spec['a']}__{op}__{spec['b']}"
+                value = {"ratio": a / b.where(b != 0), "diff": a - b, "prod": a * b, "sum": a + b}[op]
+            elif op in ("group_mean", "group_std", "group_dev", "group_count"):
+                by = spec["by"]
+                if by not in both.columns:
+                    raise ValueError(f"нет столбца {by!r}")
+                keys = both[by].astype(str)
+                if op == "group_count":
+                    name, value = f"count_by__{by}", keys.map(keys.value_counts()).astype(float)
+                else:
+                    col = numeric(spec["col"])
+                    stat = col.groupby(keys).transform("mean" if op != "group_std" else "std")
+                    name = f"{spec['col']}__{op}__{by}"
+                    value = col - stat if op == "group_dev" else stat
+            elif op == "count":
+                col = spec["col"]
+                if col not in both.columns:
+                    raise ValueError(f"нет столбца {col!r}")
+                keys = both[col].astype(str)
+                name, value = f"count__{col}", keys.map(keys.value_counts()).astype(float)
+            elif op == "cross":
+                a, b = spec["a"], spec["b"]
+                if a not in both.columns or b not in both.columns:
+                    raise ValueError(f"нет столбца {a!r} или {b!r}")
+                value = both[a].astype(str) + "|" + both[b].astype(str)
+                if value.nunique() > 0.5 * len(value):
+                    raise ValueError(f"cross {a}×{b}: почти все значения уникальны")
+                name = f"{a}__x__{b}"
+            elif op == "nan_count":
+                name, value = "nan_count", both.isna().sum(axis=1).astype(float)
+            else:
+                raise ValueError(f"неизвестная операция {op!r}; доступны {list(FEATURE_GRAMMAR)}")
+            if name in both.columns or name in new:
+                continue
+            if isinstance(value, pd.Series) and value.dtype.kind == "f":
+                value = value.replace([np.inf, -np.inf], np.nan)
+            new[name] = value
+            applied.append({"name": name, "spec": spec})
+        except Exception as error:
+            errors.append(f"{raw}: {_short(error, 150)}")
+    if not new:
+        return X_train, X_test, [], errors
+    extra = pd.DataFrame(new)
+    train_out = pd.concat([X_train.reset_index(drop=True), extra.iloc[:n_train].reset_index(drop=True)], axis=1)
+    test_out = pd.concat([X_test.reset_index(drop=True), extra.iloc[n_train:].reset_index(drop=True)], axis=1)
+    train_out.index, test_out.index = X_train.index, X_test.index
+    return train_out, test_out, applied, errors
+
+
 def _fit_args(method, args: dict):
     """Аргументы от LLM к сигнатуре инструмента: «n_trials-» -> n_trials, «hypothesisary» -> hypothesis
     (по префиксу), незнакомые ключи отбрасываются и возвращаются списком, а не роняют вызов."""
@@ -610,6 +704,8 @@ class Session:
 
         if self.written and self.written.get("run_id"):
             self.written["stale"] = True  # ответ от прошлой постановки остаётся на диске до лучшего
+        self.featuresets = {0: {"splits": splits, "specs": []}}   # набор признаков -> разрезанные данные
+        self.featureset = 0
         self.setup = {"schema": schema, "splits": splits, "split": main, "profile": profile, "task_type": task_type,
                       "metric": resolved.name, "metric_obj": resolved, "higher_is_better": resolved.higher_is_better,
                       "prediction_format": prediction_format, "positive": positive, "reason": reason}
@@ -681,7 +777,8 @@ class Session:
             # новая схема становится текущей только после успешного полного запуска
             self.plan, self.plan_key = plan, key
         config = {"model": model, "params": params, "learning_rate": float(learning_rate),
-                  "target_transform": target_transform, "max_rounds": int(max_rounds), "subsample": subsample}
+                  "target_transform": target_transform, "max_rounds": int(max_rounds), "subsample": subsample,
+                  "featureset": self.featureset}
         self.runs[run_id] = {"config": config, "result": summary, "eval": evals, "key": key, "hypothesis": hypothesis}
         best = self.best_run()
         self.log(f"[evaluate {run_id}] status={status} score={summary.get('score')} "
@@ -778,6 +875,59 @@ class Session:
         return {"ok": True, "model": model, "trials": len(runs), "failed": failures,
                 "seconds": round(time.monotonic() - started), "best": ranked[0], "top": ranked[:5],
                 "best_run_id": self.best_run(), "best_score": self._score(self.best_run())}
+
+    def tool_add_features(self, features, hypothesis="", model="lightgbm"):
+        """Добавить признаки из фиксированной грамматики (без таргета, поэтому без утечки). Партия принимается,
+        только если быстрая модель на тех же фолдах устойчиво лучше без неё; иначе данные не меняются."""
+        if self.setup is None:
+            return {"ok": False, "error": "сначала вызовите set_task"}
+        if isinstance(features, (str, dict)):
+            features = [features]
+        if not isinstance(features, list) or not features:
+            return {"ok": False, "error": "features: список спецификаций, например {\"op\": \"ratio\", \"a\": \"x\", \"b\": \"y\"}"}
+        current = self.featuresets[self.featureset]
+        new_splits, applied, errors = {}, [], []
+        for target, split in current["splits"].items():
+            X_train, X_test, applied, errors = build_features(split.X_train, split.X_test, features[:40])
+            new_splits[target] = replace(split, X_train=X_train, X_test=X_test)
+        if not applied:
+            return {"ok": False, "error": "ни один признак не построен", "errors": errors[:10],
+                    "grammar": FEATURE_GRAMMAR}
+        # база: лучший полный запуск выбранной модели с параметрами по умолчанию на текущем наборе, иначе новый
+        base = next((r for r in reversed(self._ok_runs(full_only=True))
+                     if self.runs[r]["config"]["model"] == model and not self.runs[r]["config"]["params"]
+                     and self.runs[r]["config"].get("featureset", 0) == self.featureset
+                     and self.runs[r]["key"] == self.plan_key), None)
+        if base is None:
+            out = self.tool_evaluate(model=model, hypothesis=f"база для проверки признаков: {hypothesis}")
+            if not out.get("ok"):
+                return {"ok": False, "error": f"база не посчиталась: {out.get('error')}"}
+            base = out["run_id"]
+        config = self.runs[base]["config"]
+        previous = (self.featureset, self.setup["splits"], self.setup["split"])
+        number = max(self.featuresets) + 1
+        self.featuresets[number] = {"splits": new_splits, "specs": current["specs"] + applied}
+        self.featureset = number
+        self.setup["splits"], self.setup["split"] = new_splits, new_splits[next(iter(new_splits))]
+        out = self.tool_evaluate(model=model, params=config["params"], learning_rate=config["learning_rate"],
+                                 target_transform=config["target_transform"],
+                                 hypothesis=f"признаки {[a['name'] for a in applied][:8]}: {hypothesis}")
+        candidate = out.get("run_id")
+        accepted = bool(out.get("ok")) and self._significantly_better(candidate, base)
+        paired = self._paired(candidate, base) if out.get("ok") else None
+        if not accepted:
+            self.featureset, self.setup["splits"], self.setup["split"] = previous
+            del self.featuresets[number]
+            if candidate in self.runs:
+                del self.runs[candidate]
+        self.log(f"[features] {'приняты' if accepted else 'отклонены'} {[a['name'] for a in applied]} "
+                 f"base={base} {self._score(base)} new={out.get('oof_score')} {paired}")
+        return {"ok": True, "accepted": accepted, "features": [a["name"] for a in applied], "errors": errors[:10],
+                "base_run": base, "base_oof": self._score(base), "new_run": candidate if accepted else None,
+                "new_oof": out.get("oof_score"), "paired": paired, "featureset": self.featureset,
+                "n_features": len(self.setup["split"].X_train.columns),
+                "note": "признаки приняты: дальнейшие evaluate/tune используют их" if accepted else
+                        "признаки не дали устойчивого выигрыша: данные не изменены"}
 
     def tool_finish(self, reason=""):
         """Закончить исследование. Если ответ не записан, код сам обучит лучший запуск."""
@@ -1015,7 +1165,8 @@ class Session:
         run, setup = self.runs[run_id], self.setup
         config = run["config"]
         fits = {}
-        for target, split in setup["splits"].items():
+        splits = self.featuresets[config.get("featureset", 0)]["splits"]
+        for target, split in splits.items():
             ev = run["eval"][target]
             n_rounds = ml_tools.rounds_from(ev)
             budget = max(10.0, self.time_left() + self.final_slack)
@@ -1433,6 +1584,22 @@ TOOL_SPECS = [
                 "hypothesis": {"type": "string"},
             },
             "required": ["model"],
+        },
+    },
+    {
+        "name": "add_features",
+        "description": "Добавить признаки из грамматики (считаются без таргета). Принимаются партией, только если "
+                       "быстрая модель на тех же фолдах устойчиво лучше; иначе данные не меняются. Формулы 'a/b', "
+                       "'a-b', 'a*b', 'a+b' или словари: {op: ratio|diff|prod|sum, a, b}, {op: group_mean|group_std|"
+                       "group_dev|group_count, col, by}, {op: count, col}, {op: cross, a, b}, {op: nan_count}.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "features": {"type": "array", "items": {}, "description": "До 40 спецификаций признаков"},
+                "hypothesis": {"type": "string", "description": "Почему эти признаки должны помочь (смысл из task.md)"},
+                "model": {"type": "string", "enum": list(MODELS)},
+            },
+            "required": ["features"],
         },
     },
     {
