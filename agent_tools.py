@@ -274,6 +274,7 @@ FEATURE_GRAMMAR = {
     "cross": {"op": "cross", "a": "категория", "b": "категория"},
     "nan_count": {"op": "nan_count"},
     "as_category": {"op": "as_category", "col": "числовой столбец-код (id менеджера, MCC, регион)"},
+    "target_mean": {"op": "target_mean", "by": ["столбцы ключа одной сущности (здание, клиент, товар)"]},
 }
 _FORMULA = re.compile(r"^\s*([\w.]+)\s*([-+*/])\s*([\w.]+)\s*$")
 
@@ -291,8 +292,39 @@ def _parse_feature(spec):
     return spec
 
 
-def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list):
-    """Посчитать признаки на train и test вместе (только по признакам, без таргета).
+def _target_mean(keys_train: pd.Series, keys_test: pd.Series, y, regression=None, folds: int = 5) -> dict:
+    """Среднее таргета по ключу: для train — по остальным фолдам (своя строка не участвует), для test — по всему
+    train; плюс число строк с тем же ключом. Классы: доля каждого класса, кроме самого частого (не больше 10)."""
+    if isinstance(y, pd.DataFrame):
+        y = y.iloc[:, 0]
+    y = pd.Series(np.asarray(y)).reset_index(drop=True)
+    keys_train = keys_train.reset_index(drop=True)
+    if regression is None:
+        regression = pd.api.types.is_numeric_dtype(y) and y.nunique() > 20
+    if regression:
+        targets = {"": pd.to_numeric(y, errors="coerce").astype(float)}
+    else:
+        classes = y.value_counts().index[1:11]
+        targets = {f"__{_label_text(c)}": (y == c).astype(float) for c in classes}
+    order = np.random.default_rng(0).permutation(len(keys_train)) % folds
+    out = {}
+    for suffix, values in targets.items():
+        oof = np.full(len(keys_train), np.nan)
+        for k in range(folds):
+            stat = values[order != k].groupby(keys_train[order != k].values).mean()
+            oof[order == k] = keys_train[order == k].map(stat).values
+        out[suffix] = (oof, keys_test.map(values.groupby(keys_train.values).mean()).values)
+    count = keys_train.value_counts()
+    oof_count = np.zeros(len(keys_train))
+    for k in range(folds):
+        part = keys_train[order != k].value_counts()
+        oof_count[order == k] = keys_train[order == k].map(part).fillna(0).values
+    out["__n"] = (oof_count, keys_test.map(count).fillna(0).values)
+    return out
+
+
+def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list, y_train=None, task_type=None):
+    """Посчитать признаки на train и test вместе (только по признакам; target_mean — по таргету train вне фолда).
     Возвращает (X_train, X_test, применённые [{name, spec}], ошибки)."""
     both = pd.concat([X_train, X_test], axis=0, ignore_index=True)
     n_train = len(X_train)
@@ -349,6 +381,25 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list):
                 value = both[col].astype("string").where(both[col].notna()).astype(object)
             elif op == "nan_count":
                 name, value = "nan_count", both.isna().sum(axis=1).astype(float)
+            elif op == "target_mean":
+                # одна сущность в разные периоды (здание по годам, клиент по месяцам): её прошлый таргет
+                by = spec.get("by")
+                by = [by] if isinstance(by, str) else list(by or [])
+                missing = [c for c in by if c not in both.columns]
+                if not by or missing or y_train is None:
+                    raise ValueError(f"target_mean: нужен by — список столбцов train ({missing or 'пусто'})")
+                keys = both[by].astype(str).agg("|".join, axis=1)
+                regression = None if task_type is None else task_type == "regression"
+                if keys.iloc[:n_train].nunique() > 0.95 * n_train:
+                    raise ValueError(f"target_mean по {by}: ключ почти уникален, повторов нет")
+                name = "te__" + "__".join(by)
+                if name in both.columns or name in new:
+                    continue
+                for suffix, (train_part, test_part) in _target_mean(keys.iloc[:n_train], keys.iloc[n_train:],
+                                                                   y_train, regression).items():
+                    new[name + suffix] = pd.Series(np.concatenate([train_part, test_part]), dtype=float)
+                applied.append({"name": name, "spec": spec})
+                continue
             else:
                 raise ValueError(f"неизвестная операция {op!r}; доступны {list(FEATURE_GRAMMAR)}")
             if name in both.columns or name in new:
@@ -366,6 +417,22 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list):
     test_out = pd.concat([X_test.reset_index(drop=True), extra.iloc[n_train:].reset_index(drop=True)], axis=1)
     train_out.index, test_out.index = X_train.index, X_test.index
     return train_out, test_out, applied, errors
+
+
+def entity_keys(X_train, X_test) -> list:
+    """Столбцы-«отпечатки» сущности: много значений, и значения test в основном уже были в train (площадь здания,
+    сумма договора). Погода нового года или непрерывные замеры в test новые и сюда не попадают."""
+    n = len(X_train)
+    found = []
+    for col in X_train.columns:
+        unique = X_train[col].nunique()
+        values = X_test[col].dropna()
+        if max(30, 0.01 * n) <= unique <= 0.9 * n and len(values):
+            hit = values.isin(set(X_train[col].dropna().unique())).mean()
+            if hit >= 0.6:
+                found.append((unique, col))
+    cols = [c for _, c in sorted(found, reverse=True)]
+    return [cols[:1], cols[:2]] if len(cols) >= 2 else [cols] if cols else []
 
 
 ROW_ORDER = "__row_order__"
@@ -674,6 +741,10 @@ class Session:
             "validation": plan, "output_columns": self._output_columns(),
             "notes": notes, "warnings": main.warnings,
         }
+        keys = entity_keys(main.X_train, main.X_test)
+        if keys:
+            out["entity_key_hint"] = {"columns": keys[-1], "note": "много значений, и значения test уже были в train: "
+                                      "похоже на одни и те же сущности; проверьте add_features target_mean по ним"}
         if task_type == "binary":
             out["answer_as_probability"] = self._wants_proba()
             out["positive_class"] = {t: _label_text(c) for t, c in positive.items()}
@@ -834,7 +905,7 @@ class Session:
                 "best_run_id": self.best_run(), "best_score": self._score(self.best_run())}
 
     def tool_add_features(self, features, hypothesis="", model="lightgbm"):
-        """Добавить признаки из фиксированной грамматики (без таргета, поэтому без утечки). Партия принимается,
+        """Добавить признаки из фиксированной грамматики (без таргета; target_mean — вне фолда). Партия принимается,
         только если быстрая модель на тех же фолдах устойчиво лучше без неё; иначе данные не меняются."""
         if self.setup is None:
             return {"ok": False, "error": "сначала вызовите set_task"}
@@ -845,7 +916,9 @@ class Session:
         current = self.featuresets[self.featureset]
         new_splits, applied, errors = {}, [], []
         for target, split in current["splits"].items():
-            X_train, X_test, applied, errors = build_features(split.X_train, split.X_test, features[:40])
+            X_train, X_test, applied, errors = build_features(split.X_train, split.X_test, features[:40],
+                                                              y_train=split.y_train,
+                                                              task_type=self.setup["task_type"])
             new_splits[target] = replace(split, X_train=X_train, X_test=X_test)
         if not applied:
             return {"ok": False, "error": "ни один признак не построен", "errors": errors[:10],
@@ -1684,11 +1757,13 @@ TOOL_SPECS = [
     },
     {
         "name": "add_features",
-        "description": "Добавить признаки из грамматики (считаются без таргета). Принимаются партией, только если "
+        "description": "Добавить признаки из грамматики (без таргета, кроме target_mean). Принимаются партией, только если "
                        "быстрая модель на тех же фолдах устойчиво лучше; иначе данные не меняются. Формулы 'a/b', "
                        "'a-b', 'a*b', 'a+b' или словари: {op: ratio|diff|prod|sum, a, b}, {op: group_mean|group_std|"
                        "group_dev|group_count, col, by}, {op: count, col}, {op: cross, a, b}, {op: nan_count}, "
-                       "{op: as_category, col} — числовой код как категория (id, MCC, регион).",
+                       "{op: as_category, col} — числовой код как категория (id, MCC, регион), "
+                       "{op: target_mean, by: [столбцы]} — средний таргет той же сущности (здание, клиент) "
+                       "по другим строкам train, вне фолда; ключ — неизменные столбцы, повторяющиеся в test.",
         "parameters": {
             "type": "object",
             "properties": {

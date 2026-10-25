@@ -114,6 +114,9 @@ def improve(session) -> None:
                       "hypothesis": f"fallback: objective {objective} под метрику {setup['metric']}"})
     steps += [{"model": "catboost", "hypothesis": "fallback: вторая модель"},
               {"model": "xgboost", "hypothesis": "fallback: третья модель"}]
+    if len(y) >= 5000:   # глубокие деревья узнают повторяющиеся сущности: public-регрессия RMSE 39.3 -> 35.8
+        steps.append({"model": "xgboost", "params": {"max_depth": 11, "min_child_weight": 1.0},
+                      "hypothesis": "fallback: глубокие деревья"})
     last = 0.0
     auto_features = True
     for step in steps:
@@ -173,6 +176,13 @@ def add_safe_features(session, base_seconds) -> None:
         result = session.call("add_features", {"features": [{"op": "as_category", "col": c} for c in codes],
                                                "model": "catboost", "hypothesis": "fallback: коды как категории"})
         log(f"[fallback] as_category: accepted={result.get('accepted')} {result.get('error', '')}")
+    import agent_tools
+    keys = agent_tools.entity_keys(X, session.setup["split"].X_test)
+    if keys and session.time_left() > 6 * base_seconds + 300:
+        result = session.call("add_features", {"features": [{"op": "target_mean", "by": k} for k in keys],
+                                               "hypothesis": "fallback: таргет той же сущности в других строках"})
+        log(f"[fallback] target_mean {keys}: accepted={result.get('accepted')} {result.get('error', '')}")
+
 
 
 def is_code_like(series) -> bool:

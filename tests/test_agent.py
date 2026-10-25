@@ -470,6 +470,23 @@ class AddFeaturesTest(unittest.TestCase):
         self.assertEqual(list(train["mgr__cat"]), ["10.0", "20.0", "10.0"])
         self.assertTrue(pd.isna(test["mgr__cat"].iloc[0]))
 
+    def test_target_mean_is_out_of_fold_on_train_and_full_on_test(self):
+        X = pd.DataFrame({"area": [1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 2, 2, 2, 2, 2, 2, 2, 2, 2, 2]})
+        y = pd.Series(np.arange(20, dtype=float))
+        test = pd.DataFrame({"area": [1, 2, 3]})
+        train, test_out, applied, errors = agent_tools.build_features(X, test, [{"op": "target_mean", "by": "area"}],
+                                                                      y_train=y, task_type="regression")
+        self.assertEqual(applied[0]["name"], "te__area")
+        self.assertEqual(list(test_out["te__area"].iloc[:2]), [4.5, 14.5])     # среднее по всему train
+        self.assertTrue(pd.isna(test_out["te__area"].iloc[2]))                # новой сущности нет в train
+        self.assertEqual(list(test_out["te__area__n"]), [10, 10, 0])
+        self.assertFalse(np.allclose(train["te__area"], np.where(X.area == 1, 4.5, 14.5)))  # своя строка не входит
+        unique = pd.DataFrame({"area": range(20)})
+        _, _, applied, errors = agent_tools.build_features(unique, test, [{"op": "target_mean", "by": ["area"]}],
+                                                           y_train=y)
+        self.assertEqual(applied, [])
+        self.assertIn("почти уникален", errors[0])
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)
