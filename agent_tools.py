@@ -335,6 +335,11 @@ def _target_mean(keys_train: pd.Series, keys_test: pd.Series, y, regression=None
                 train_part = np.asarray(train_part, dtype=float).copy()
                 train_part[valid] = (mapped.fillna(0) if suffix == "__n" else mapped).values
             out[suffix] = (train_part, test_part)
+        if regression:
+            test_t = scheme.get("test_times")
+            test_t = None if test_t is None else np.asarray(test_t, dtype=float) * (-1.0 if scheme.get("backward") else 1.0)
+            out.update(_last_value(frame.drop(columns="v"), targets[""], keys_test, known, scheme.get("splits") or [],
+                                   test_t))
         return out
     folds = scheme.get("folds")
     if folds is None or len(folds) != len(keys_train) or (np.asarray(folds) < 0).any():
@@ -355,6 +360,27 @@ def _target_mean(keys_train: pd.Series, keys_test: pd.Series, y, regression=None
     scale = (len(numbers) - 1) / max(len(numbers), 1)
     out["__n"] = (oof_count, keys_test.map(keys_train.value_counts()).fillna(0).values * scale)
     return out
+
+
+def _last_value(frame: pd.DataFrame, values: pd.Series, keys_test: pd.Series, known, splits, test_t=None) -> dict:
+    """Таргет сущности в ближайшем более раннем периоде и сколько периодов назад (временная схема, регрессия).
+    Строка проверочной части видит только train своей части; test — последний период всего train."""
+    rows = frame.assign(v=values.values)[known]
+    per = rows.groupby(["k", "t"])["v"].mean().reset_index().sort_values(["k", "t"])
+    per["last"] = per.groupby("k")["v"].shift(1)
+    per["last_t"] = per.groupby("k")["t"].shift(1)
+    joined = frame[["k", "t"]].merge(per[["k", "t", "last", "last_t"]], on=["k", "t"], how="left")
+    last, gap = joined["last"].values.copy(), (joined["t"] - joined["last_t"]).abs().values
+    for train, valid in splits:
+        seen = rows.index.intersection(frame.index[train])
+        tail = per[per.set_index(["k", "t"]).index.isin(rows.loc[seen].set_index(["k", "t"]).index)]
+        tail = tail.groupby("k").tail(1).set_index("k")
+        part = frame.iloc[valid]
+        last[valid] = part["k"].map(tail["v"]).values
+        gap[valid] = (part["t"] - part["k"].map(tail["t"])).abs().values
+    tail = per.groupby("k").tail(1).set_index("k")
+    test_gap = np.full(len(keys_test), np.nan) if test_t is None else np.abs(test_t - keys_test.map(tail["t"]).values)
+    return {"__last": (last, keys_test.map(tail["v"]).values), "__gap": (gap, test_gap)}
 
 
 def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list, y_train=None, task_type=None,
@@ -1035,6 +1061,7 @@ class Session:
             try:
                 return {"times": ml_validation._time_values(split.X_train[plan["column"]]),
                         "backward": plan.get("direction") == "backward",
+                        "test_times": ml_validation._time_values(split.X_test[plan["column"]]),
                         "splits": list(ml_validation.make_splits(plan, split.X_train, None, seed=self.seed))}
             except Exception:
                 pass

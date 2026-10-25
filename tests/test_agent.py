@@ -543,7 +543,8 @@ class AddFeaturesTest(unittest.TestCase):
             changed = y.copy()
             changed.iloc[valid] = rng.normal(0, 100, len(valid))
             after = agent_tools._target_mean(keys, pd.Series(["1"]), changed, True, scheme)
-            np.testing.assert_allclose(before[""][0][valid], after[""][0][valid])
+            for suffix in ("", "__last", "__gap"):
+                np.testing.assert_allclose(before[suffix][0][valid], after[suffix][0][valid])
 
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:

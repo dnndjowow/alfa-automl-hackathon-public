@@ -117,6 +117,11 @@ def improve(session) -> None:
     if len(y) >= 5000:   # глубокие деревья узнают повторяющиеся сущности: public-регрессия RMSE 39.3 -> 35.8
         steps.append({"model": "xgboost", "params": {"max_depth": 11, "min_child_weight": 1.0},
                       "hypothesis": "fallback: глубокие деревья"})
+        if nonneg_skewed and not log_metric:
+            # log1p занижает выбросы, а метрика на исходной шкале: та же модель без преобразования — для смеси
+            # (public-регрессия, одиночные XGB: log 32.17, смесь log 0.7 + raw 0.3 — 31.54)
+            steps.append({"model": "xgboost", "params": {"max_depth": 11, "min_child_weight": 1.0},
+                          "target_transform": "none", "hypothesis": "fallback: глубокие деревья, исходная шкала"})
     # разнородные конфигурации из портфеля AutoGluon (TabRepo): смесь берёт полезные и игнорирует слабые
     steps += [{"model": "lightgbm", "params": {"extra_trees": True}, "hypothesis": "fallback: портфель, extra_trees"},
               {"model": "lightgbm", "params": {"num_leaves": 128, "colsample_bytree": 0.9, "min_child_samples": 3},
