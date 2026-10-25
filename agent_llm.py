@@ -249,6 +249,18 @@ def early_finish_hint(session: agent_tools.Session, total_budget: float) -> dict
             "ideas": ideas, "best_run_id": best, "best_score": session._score(best) if best else None}
 
 
+def auto_entity_features(session: agent_tools.Session) -> Optional[dict]:
+    """Повторяющиеся сущности (здание по годам): target_mean по ключу проверяет сам код — модель часто берёт
+    вместо ключа слабые категории. Признак принимается, только если CV устойчиво лучше."""
+    split = session.setup["split"]
+    keys = agent_tools.entity_keys(split.X_train, split.X_test)
+    if not keys:
+        return None
+    out = session.call("add_features", {"features": [{"op": "target_mean", "by": k} for k in keys],
+                                        "hypothesis": "код: таргет той же сущности по entity_key_hint"})
+    return {key: out.get(key) for key in ("accepted", "features", "base_oof", "new_oof", "note", "error")}
+
+
 def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40, log=print,
               min_time_s: float = 90.0, max_failures: int = 4) -> dict:
     """Диалог с моделью до finish / лимита шагов / времени. Возвращает сводку."""
@@ -261,6 +273,7 @@ def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40,
     idle = steps = failures = bad_calls = 0
     total_budget = max(1.0, session.time_left())
     early_finish_refused = False
+    entity_checked = None                     # постановка, для которой код уже проверил target_mean
     while steps < max_steps and session.finished is None:
         if session.time_left() < min_time_s:
             log("[agent] время на исходе: выходим из диалога")
@@ -320,6 +333,13 @@ def run_agent(session: agent_tools.Session, chat: Callable, max_steps: int = 40,
                     log(f"[agent] finish отклонён: {result['error'][:200]}")
                 else:
                     result = session.call(call["name"], args)
+                    if (call["name"] == "evaluate" and result.get("ok") and session.setup is not None
+                            and entity_checked is not session.setup and session._ok_runs(full_only=True)):
+                        entity_checked = session.setup
+                        auto = auto_entity_features(session)
+                        if auto:
+                            result["auto_entity_features"] = auto
+                            log(f"[agent] target_mean по ключу сущности: accepted={auto.get('accepted')}")
             bad_calls = 0 if result.get("ok") else bad_calls + 1
             text = json.dumps(result, ensure_ascii=False)
             if native:

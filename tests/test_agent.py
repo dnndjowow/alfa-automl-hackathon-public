@@ -487,6 +487,30 @@ class AddFeaturesTest(unittest.TestCase):
         self.assertEqual(applied, [])
         self.assertIn("почти уникален", errors[0])
 
+    def test_agent_loop_checks_entity_target_mean_itself(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(tmp, kind="regression", n_train=1500, n_test=300)
+            folder = task.task_md.parent / "data" / "participants"
+            rng = np.random.default_rng(3)
+            effect = rng.normal(0, 10, 150)
+            for name in ("train", "test"):
+                frame = pd.read_csv(folder / f"{name}.csv")
+                frame["area"] = rng.integers(0, 150, len(frame)) * 37.5 + 100   # «площадь здания»
+                if name == "train":
+                    frame["y"] = effect[((frame["area"] - 100) / 37.5).astype(int)] + rng.normal(0, 1, len(frame))
+                frame.to_csv(folder / f"{name}.csv", index=False)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            chat = ScriptedChat([
+                ("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"}),
+                ("evaluate", {"model": "lightgbm", "hypothesis": "база"}),
+                ("finish", {"reason": "тест"}),
+            ])
+            agent_llm.run_agent(session, chat, log=lambda m: None)
+            reply = json.loads(chat.seen[2][-1]["content"])
+            self.assertIn("area", json.dumps(json.loads(chat.seen[1][-1]["content"]).get("entity_key_hint")))
+            self.assertTrue(reply["auto_entity_features"]["accepted"], reply["auto_entity_features"])
+            self.assertIn("te__area", session.setup["split"].X_test.columns)
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)
