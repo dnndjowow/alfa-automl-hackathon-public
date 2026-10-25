@@ -103,6 +103,15 @@ class TaskTypeTest(unittest.TestCase):
         confirmed = ms.suggest_task_type(y, "Задача многоклассовой классификации")
         self.assertEqual((confirmed["type"], confirmed["ambiguous"]), ("multiclass", False))
 
+    def test_many_integer_classes_follow_a_classification_metric(self):
+        # код-ревью 25.10 (F13): 201 целый класс с Macro F1 определялся как регрессия
+        y = pd.Series(np.tile(np.arange(201), 3))
+        hint = ms.suggest_task_type(y, "Многоклассовая классификация. Основная метрика — Macro F1", "f1_macro")
+        self.assertEqual((hint["type"], hint["ambiguous"]), ("multiclass", False))
+        # без метрики, по одному тексту — по-прежнему регрессия с пометкой
+        self.assertEqual(ms.suggest_task_type(y, "Многоклассовая классификация")["type"], "regression")
+        self.assertEqual(ms.suggest_task_type(y, "", "rmse")["type"], "regression")
+
     def test_text_conflict_with_clear_data_keeps_data(self):
         y = pd.Series(np.random.default_rng(2).normal(size=100))
         guess = ms.suggest_task_type(y, "классификация классификация")
