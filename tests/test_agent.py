@@ -546,6 +546,25 @@ class AddFeaturesTest(unittest.TestCase):
             for suffix in ("", "__last", "__gap"):
                 np.testing.assert_allclose(before[suffix][0][valid], after[suffix][0][valid])
 
+    def test_target_mean_is_not_built_under_group_validation(self):
+        X = pd.DataFrame({"area": [1.0, 1, 2, 2]})
+        _, _, applied, errors = agent_tools.build_features(X, X.iloc[:1], [{"op": "target_mean", "by": "area"}],
+                                                           y_train=pd.Series([1.0, 2, 3, 4]), task_type="regression",
+                                                           te_scheme={"skip": "групповая схема"})
+        self.assertEqual(applied, [])                          # ревью Юры, F01
+        self.assertIn("групповая схема", errors[0])
+
+    def test_failed_row_order_request_leaves_data_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self.make(tmp)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            out = session.call("evaluate", {"validation": {"strategy": "temporal", "column": "row_order",
+                                                           "direction": "bad"}})
+            self.assertFalse(out["ok"])                            # ревью Юры, F12
+            self.assertEqual(session.featureset, 0)
+            self.assertNotIn(agent_tools.ROW_ORDER, session.setup["split"].X_train.columns)
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)

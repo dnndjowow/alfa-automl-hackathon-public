@@ -430,7 +430,7 @@ def score(name):
     if list(sub.columns) != list(sample.columns):
         problems.append(f"столбцы {list(sub.columns)} вместо {list(sample.columns)}")
     if len(sub) != len(truth):
-        problems.append(f"строк {len(sub)} вместо {len(truth)}")
+        return meta["metric"], None, None, problems + [f"строк {len(sub)} вместо {len(truth)}"]   # ревью Юры, F19
     id_col = meta["id"]
     if id_col in sub.columns and not (sub[id_col].to_numpy() == truth[id_col].to_numpy()).all():
         problems.append("порядок или значения id не совпадают")

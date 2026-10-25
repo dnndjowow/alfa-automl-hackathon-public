@@ -447,6 +447,8 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list, y_t
                 by = spec.get("by")
                 by = [by] if isinstance(by, str) else list(by or [])
                 missing = [c for c in by if c not in both.columns]
+                if te_scheme and te_scheme.get("skip"):
+                    raise ValueError(te_scheme["skip"])
                 if not by or missing or y_train is None:
                     raise ValueError(f"target_mean: нужен by — список столбцов train ({missing or 'пусто'})")
                 keys = both[by].astype(str).agg("|".join, axis=1)
@@ -860,6 +862,7 @@ class Session:
             target_transform = None
         plan, error = self._plan_from(validation)
         if error:
+            self._undo_row_order()
             return {"ok": False, "error": error}
         try:
             subsample = float(subsample) if subsample is not None else None
@@ -869,6 +872,7 @@ class Session:
             subsample = None
         budget = self._eval_budget(time_budget_s)
         if budget is None:
+            self._undo_row_order()
             return {"ok": False, "error": "времени на новый эксперимент не осталось: вызовите finalize или finish"}
 
         self._counter += 1
@@ -1059,16 +1063,21 @@ class Session:
         plan = self.plan or {}
         if plan.get("strategy") == "temporal" and plan.get("column") in split.X_train.columns:
             try:
-                return {"times": ml_validation._time_values(split.X_train[plan["column"]]),
+                col_tr, col_te = split.X_train[plan["column"]], split.X_test[plan["column"]]
+                # даты test читаем с порядком день/месяц из train, иначе «01/07» в test станет 7 января (ревью Юры)
+                test_times = (col_te.to_numpy(dtype=float) if pd.api.types.is_numeric_dtype(col_te) else
+                              ml_data.date_days(ml_data.to_dates(col_te, ml_data.date_dayfirst(col_tr))).to_numpy(dtype=float))
+                return {"times": ml_validation._time_values(col_tr),
                         "backward": plan.get("direction") == "backward",
-                        "test_times": ml_validation._time_values(split.X_test[plan["column"]]),
+                        "test_times": test_times,
                         "splits": list(ml_validation.make_splits(plan, split.X_train, None, seed=self.seed))}
             except Exception:
                 pass
         if plan.get("strategy") == "group":
-            # группы — повторы строк, а у строк test тоже есть повторы в train: случайные фолды повторяют
-            # связь train -> test (Wine MAE: 0.4246 со случайными, 0.4667 с групповыми, 0.4432 без признака)
-            return {}
+            # ревью Юры, F01: со случайными фолдами копии строки видят таргеты друг друга, а с новым признаком
+            # копии перестают совпадать, группы распадаются и сравнение с базой идёт на других фолдах.
+            # С групповыми фолдами test хуже (Wine 0.4667 против 0.4432 без признака) — поэтому не строим.
+            return {"skip": "при групповой схеме (повторы строк) target_mean не строится: CV был бы нечестным"}
         return {"folds": self._fold_ids(target)}
 
     def tool_finish(self, reason=""):
@@ -1245,6 +1254,12 @@ class Session:
             return None, ("группировка по столбцу не поддержана: group объединяет одинаковые строки train; "
                           "уберите column")
         return plan, None
+
+    def _undo_row_order(self) -> None:
+        """Неудачный запрос temporal по порядку строк не должен оставлять __row_order__ в данных (ревью Юры, F12)."""
+        rollback, self._row_order_rollback = getattr(self, "_row_order_rollback", None), None
+        if rollback:
+            self.featureset, self.setup["splits"], self.setup["split"] = rollback
 
     def _ensure_row_order(self) -> str:
         """Столбец с номером строки (train 0..n-1, test продолжает) для временной схемы, когда строки
