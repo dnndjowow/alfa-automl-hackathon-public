@@ -1029,6 +1029,10 @@ class Session:
                         "backward": plan.get("direction") == "backward"}
             except Exception:
                 pass
+        if plan.get("strategy") == "group":
+            # группы — повторы строк, а у строк test тоже есть повторы в train: случайные фолды повторяют
+            # связь train -> test (Wine MAE: 0.4246 со случайными, 0.4667 с групповыми, 0.4432 без признака)
+            return {}
         return {"folds": self._fold_ids(target)}
 
     def tool_finish(self, reason=""):
