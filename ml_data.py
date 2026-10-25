@@ -112,6 +112,7 @@ def category_text(series: pd.Series) -> pd.Series:
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$")
 _ANY_DATE = re.compile(r"^(?:\d{4}[-/.]\d{1,2}[-/.]\d{1,2}|\d{1,2}[-/.]\d{1,2}[-/.]\d{2,4})(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?$")
+_DAY_MONTH = re.compile(r"^(\d{1,2})([-/.])(\d{1,2})[-/.]\d{2,4}(?:$|[ T])")
 _DATE_SHARE = 0.95
 _EPOCH = pd.Timestamp("1970-01-01")
 DATE_PARTS = ("days", "year", "month", "dayofweek")
@@ -128,11 +129,44 @@ def parse_dates(series: pd.Series) -> Optional[pd.Series]:
     iso = text.str.match(_ISO_DATE).mean() >= _DATE_SHARE
     if not iso and text.str.match(_ANY_DATE).mean() < _DATE_SHARE:
         return None
+    if iso:
+        parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce", format="ISO8601")
+        if getattr(parsed.dt, "tz", None) is not None:
+            parsed = parsed.dt.tz_convert(None)
+    else:
+        parsed = to_dates(series)
+    return parsed if parsed[series.notna()].notna().mean() >= _DATE_SHARE else None
+
+
+def date_dayfirst(series: pd.Series) -> bool:
+    """Идёт ли день перед месяцем в датах вида 05.01.2020 или 05/01/2020.
+
+    Поле больше 12 решает однозначно (первое — день, второе — месяц); если все поля не больше 12 —
+    день первым при разделителе «.» (русский и банковский формат), иначе месяц первым (как в pandas).
+    Даты с годом в начале (2020-01-05) так не разбираются: для них False.
+    """
+    text = series.dropna().astype(str).str.strip()
+    parts = text.str.extract(_DAY_MONTH).dropna()
+    if parts.empty or len(parts) < 0.5 * len(text):
+        return False
+    first, second = parts[0].astype(int), parts[2].astype(int)
+    if (first > 12).any():
+        return True
+    if (second > 12).any():
+        return False
+    return bool((parts[1] == ".").mean() >= 0.5)
+
+
+def to_dates(series: pd.Series, dayfirst: Optional[bool] = None) -> pd.Series:
+    """Текст в дату-время (неразобранное — NaT). dayfirst=None — порядок дня и месяца по самим значениям;
+    чтобы train и test разбирались одинаково, передавайте флаг, найденный на train."""
+    if dayfirst is None:
+        dayfirst = date_dayfirst(series)
     values = series.astype(str).str.strip().where(series.notna())
-    parsed = pd.to_datetime(values, errors="coerce", format="ISO8601" if iso else "mixed")
+    parsed = pd.to_datetime(values, errors="coerce", format="mixed", dayfirst=dayfirst)
     if getattr(parsed.dt, "tz", None) is not None:
         parsed = parsed.dt.tz_convert(None)
-    return parsed if parsed[series.notna()].notna().mean() >= _DATE_SHARE else None
+    return parsed
 
 
 def date_days(parsed: pd.Series) -> pd.Series:
@@ -157,7 +191,7 @@ class TabularPreprocessor:
         if not isinstance(X, pd.DataFrame) or X.shape[1] == 0:
             raise DataError("ожидается таблица хотя бы с одним признаком")
         self.numeric_cols_, self.categorical_cols_, self.datetime_cols_ = [], [], []
-        self.categories_, self.dropped_, self.warnings_ = {}, {}, []
+        self.categories_, self.dropped_, self.warnings_, self.dayfirst_ = {}, {}, [], {}
         for col in X.columns:
             s = X[col]
             if s.isna().all():
@@ -169,6 +203,7 @@ class TabularPreprocessor:
                 self.numeric_cols_.append(col)
             elif parse_dates(s) is not None:
                 self.datetime_cols_.append(col)
+                self.dayfirst_[col] = date_dayfirst(s)  # test разбирается так же, как train
             else:
                 counts = category_text(s).dropna().value_counts()
                 order = sorted(counts.items(), key=lambda kv: (-kv[1], kv[0]))
@@ -200,10 +235,7 @@ class TabularPreprocessor:
             else:
                 values = X[col]
             if col in self.datetime_cols_:
-                parsed = pd.to_datetime(values.astype(str).str.strip().where(values.notna()),
-                                        errors="coerce", format="mixed")
-                if getattr(parsed.dt, "tz", None) is not None:
-                    parsed = parsed.dt.tz_convert(None)
+                parsed = to_dates(values, self.dayfirst_.get(col, False))
                 out[f"{col}__days"] = date_days(parsed).astype("float64")
                 out[f"{col}__year"] = parsed.dt.year.astype("float64")
                 out[f"{col}__month"] = parsed.dt.month.astype("float64")

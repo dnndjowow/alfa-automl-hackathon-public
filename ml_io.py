@@ -23,6 +23,7 @@ _TABLE_SUFFIXES = (".csv", ".tsv")
 # метки пропуска, которые встречаются в числовых столбцах чужих датасетов
 _MISSING_TOKENS = {"na", "n/a", "nan", "null", "none", "?", "-", "--", "#n/a"}
 _NUMERIC_SHARE = 0.95
+_JUNK_ROWS, _JUNK_SHARE, _JUNK_VALUES = 2, 0.001, 2  # единичный мусор в числовом столбце: строк и разных значений
 _SKIP_DIRS = {"__pycache__", "node_modules", "venv", "site-packages"}
 _MAX_DEPTH = 4
 
@@ -174,6 +175,11 @@ def find_task_files(task_md) -> TaskFiles:
                 "остальные — в extra_csv"
             )
             files.extra_csv.extend(p for p in options[1:] if p not in files.extra_csv)
+    if files.paths.get("train") is None and files.train_labels is not None:
+        # только train_labels.csv / train_target.csv: это и есть train (с признаками и таргетом)
+        files.paths["train"], files.train_labels = files.train_labels, None
+        files.warnings = [w for w in files.warnings if w != "файл роли 'train' не найден"]
+        files.warnings.append(f"отдельного train нет: как train используется {display_path(files.paths['train'], task_dir)}")
     for path in unrecognised:
         files.extra_csv.append(path)
         files.warnings.append(f"роль файла {display_path(path, task_dir)} не распознана")
@@ -225,8 +231,10 @@ def read_csv(path, text_columns=()) -> pd.DataFrame:
 
 
 def numeric_text_columns(frame: pd.DataFrame) -> list:
-    """Текстовые столбцы, которые на самом деле числовые: не меньше 95% непустых значений —
-    числа, остальное — метки пропуска («NA», «?», «null», пробелы) или единичный мусор."""
+    """Текстовые столбцы, которые на самом деле числовые: не меньше 95% непустых значений — числа,
+    остальное — метки пропуска («NA», «?», «null», пробелы) и не больше max(2, 0.1%) строк единичного
+    мусора с одним-двумя значениями. Больше нечисловых строк — это законная категория (например,
+    редкий класс «A» в таргете из «1»/«2»/«3»), и столбец остаётся текстом."""
     found = []
     for col in frame.columns:
         values = frame[col]
@@ -234,7 +242,11 @@ def numeric_text_columns(frame: pd.DataFrame) -> list:
             continue
         text = values.dropna().astype(str).str.strip()
         rest = text[~(text.eq("") | text.str.lower().isin(_MISSING_TOKENS))]
-        if len(rest) and pd.to_numeric(rest, errors="coerce").notna().mean() >= _NUMERIC_SHARE:
+        if not len(rest):
+            continue
+        bad = rest[pd.to_numeric(rest, errors="coerce").isna()]
+        if (1 - len(bad) / len(rest) >= _NUMERIC_SHARE and len(bad) <= max(_JUNK_ROWS, _JUNK_SHARE * len(rest))
+                and bad.nunique() <= _JUNK_VALUES):
             found.append(col)
     return found
 

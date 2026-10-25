@@ -64,6 +64,11 @@ _NATIVE = {
                        "f1_micro": "TotalF1:average=Micro"},
     },
 }
+# Метрики, которые меняются ступенями (доля верных ответов, F1): лучшая итерация по ним на валидации — во
+# многом удача, OOF завышается без выигрыша на скрытых данных (замер Ивана 25.10, 3 сида: CatBoost TotalF1
+# CV +0.003…+0.012 при скрытой −0.006…−0.002; LightGBM multi_error CV +0.014 при скрытой +0.002), а агент
+# выбирает модели и веса смеси по OOF. Поэтому по ним остановка — только при custom_eval=True.
+_STEP_METRICS = {"accuracy", "f1_macro", "f1_weighted", "f1_micro"}
 # встроенный многоклассовый AUC библиотек устроен иначе, чем наш one-vs-rest: это приближение,
 # зато без расчёта AUC по каждому классу на каждой итерации
 _APPROXIMATE = {"auc_mu", ("xgboost", "multiclass", "roc_auc"), ("catboost", "multiclass", "roc_auc")}
@@ -187,6 +192,10 @@ class BoostingModel:
             self.eval_note_ = f"метрика {metric.name} не подходит к задаче: остановка по метрике библиотеки"
             return None, None
         native = _NATIVE[self.name][kind].get(metric.name)
+        if metric.name in _STEP_METRICS and not self.custom_eval:
+            self.eval_note_ = (f"{metric.name} меняется ступенями: остановка по метрике библиотеки, ранняя остановка "
+                               "по ней завышает CV без выигрыша на скрытых данных (включается custom_stopping=True)")
+            return None, None
         if native:
             approx = native in _APPROXIMATE or (self.name, kind, metric.name) in _APPROXIMATE
             self.eval_note_ = f"ранняя остановка по {native}" + (f" (приближение {metric.name})" if approx else "")

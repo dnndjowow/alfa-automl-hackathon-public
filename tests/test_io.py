@@ -105,6 +105,18 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         self.assertEqual(list(data.train.columns), ["a", "b", "target"])
         self.assertTrue(any("по порядку" in w for w in data.files.warnings))
 
+    def test_only_labels_file_is_used_as_train(self):
+        # ревью Ивана (25.10, №5): только train_labels.csv / train_target.csv с полным train — train был None
+        for name in ("train_labels.csv", "train_target.csv"):
+            with self.subTest(name):
+                root = self.write_task({name: "id,x,y\n1,0.5,0\n2,1.5,1\n3,2.5,0\n", "test.csv": "id,x\n4,3.5\n"},
+                                       f"`{name}` `test.csv`")
+                data = ml_io.load_task(root / "task.md")
+                self.assertEqual(data.train["y"].tolist(), [0, 1, 0])
+                self.assertIsNone(data.files.train_labels)
+                self.assertFalse(any("роли 'train' не найден" in w for w in data.files.warnings))
+                self.assertTrue(any("как train используется" in w for w in data.files.warnings))
+
     def test_unselected_candidates_are_kept_in_extra(self):
         root = self.write_task({"train.csv": "id,x,y\n1,2,3\n", "training.csv": "id,x,y\n1,2,3\n",
                                 "test.csv": "id,x\n2,3\n"}, "")
@@ -200,6 +212,24 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         self.assertTrue(pd.isna(data.test.loc[1, "x"]))
         self.assertEqual(set(data.train["country"]), {"NA", "RU"})  # настоящая категория «NA» не тронута
         self.assertTrue(any("переведены в числа" in w for w in data.files.warnings))
+
+    def test_rare_legit_class_is_not_erased(self):
+        # ревью Ивана (25.10, №3): до 5% нечисловых значений считались мусором, и редкий класс «A»
+        # в таргете из «1»/«2»/«3» превращался в пропуск, а split_task выбрасывал эти строки
+        labels = ["1", "2", "3"] * 33 + ["A"] * 4
+        rows = ["id,x,target"] + [f"{i},{i * 0.5},{label}" for i, label in enumerate(labels)]
+        root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,x\n500,1.5\n"})
+        data = ml_io.load_task(root / "task.md")
+        self.assertEqual(int((data.train["target"].astype(str) == "A").sum()), 4)
+        self.assertFalse(data.train["target"].isna().any())
+
+    def test_single_junk_value_still_becomes_numeric(self):
+        # единичный мусор (не больше max(2, 0.1%) строк, одно-два значения) по-прежнему не мешает
+        rows = ["id,x,y"] + [f"{i},{'oops' if i == 3 else i * 0.5},{i}" for i in range(200)]
+        root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,x\n500,1.5\n"})
+        data = ml_io.load_task(root / "task.md")
+        self.assertTrue(pd.api.types.is_float_dtype(data.train["x"]))
+        self.assertTrue(pd.isna(data.train.loc[3, "x"]))
 
     def test_mostly_text_column_is_not_converted(self):
         rows = ["id,code,y"] + [f"{i},{'A' + str(i) if i % 2 else str(i)},{i}" for i in range(20)]

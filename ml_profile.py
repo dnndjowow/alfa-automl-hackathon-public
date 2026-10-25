@@ -17,7 +17,7 @@ import pandas as pd
 
 import ml_io
 import ml_schema
-from ml_data import category_text, date_days, parse_dates
+from ml_data import category_text, date_dayfirst, date_days, parse_dates, to_dates
 
 _TIME_HINT = re.compile(r"year|date|time|month|week|day|period|quarter|дата|год|месяц|период", re.IGNORECASE)
 _HIGH_CARDINALITY = 50
@@ -117,8 +117,9 @@ def compare_train_test(train: pd.DataFrame, test: pd.DataFrame, columns, top=10)
                     side[col] = "above" if below == 0 else "below" if above == 0 else "both"
         elif parse_dates(a) is not None:
             # даты сравниваем как время: test позже/раньше train включает временную схему
-            da = date_days(parse_dates(a))
-            db = date_days(pd.to_datetime(b.astype(str).str.strip().where(b.notna()), errors="coerce", format="mixed"))
+            dayfirst = date_dayfirst(a)  # test разбираем так же, как train
+            da = date_days(to_dates(a, dayfirst))
+            db = date_days(to_dates(b, dayfirst))
             db = db.dropna()
             if len(db) and da.notna().any():
                 below, above = float((db < da.min()).mean()), float((db > da.max()).mean())

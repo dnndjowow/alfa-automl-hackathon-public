@@ -111,6 +111,13 @@ class SyntheticProfileTest(unittest.TestCase):
         self.assertEqual((tt["out_of_train_range_share"]["d"], tt["out_of_train_range_side"]["d"]), (1.0, "above"))
         self.assertEqual(tt["unseen_categories_share"], {})
 
+    def test_day_first_dates_are_compared_as_time(self):
+        # ревью Ивана (25.10, №1): при «дд.мм.гггг» test позже train находился лишь у 15.5% строк
+        train = pd.DataFrame({"d": pd.date_range("2020-01-01", "2021-06-30").strftime("%d.%m.%Y")})
+        test = pd.DataFrame({"d": pd.date_range("2021-07-01", periods=90).strftime("%d.%m.%Y")})
+        tt = mp.compare_train_test(train, test, ["d"])
+        self.assertEqual((tt["out_of_train_range_share"]["d"], tt["out_of_train_range_side"]["d"]), (1.0, "above"))
+
     def test_unseen_categories_ignore_int_float_text(self):
         tt = mp.compare_train_test(pd.DataFrame({"c": ["A", "1"]}), pd.DataFrame({"c": [1.0, 1.0]}), ["c"])
         self.assertEqual(tt["unseen_categories_share"], {})

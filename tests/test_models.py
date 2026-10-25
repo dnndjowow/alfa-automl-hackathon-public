@@ -200,9 +200,17 @@ class BehaviourTest(unittest.TestCase):
                 m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
                 self.assertIn("custom_stopping=True", m.eval_note_)
                 self.assertIsNone(m._stop_custom)
-        m = model("catboost", "classification", n_classes=3, eval_metric="f1_macro", max_rounds=50)
+        # ревью Ивана (25.10, №2): ступенчатые метрики (F1, accuracy) без флага не останавливают обучение
+        # и у CatBoost, и у встроенных binary_error/multi_error — остановка по метрике библиотеки
+        for name, metric in (("catboost", "f1_macro"), ("lightgbm", "accuracy"), ("xgboost", "accuracy")):
+            with self.subTest(name=name, metric=metric):
+                m = model(name, "classification", n_classes=3, eval_metric=metric, max_rounds=50)
+                m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
+                self.assertIn("ступенями", m.eval_note_)
+                self.assertEqual((m._stop_native, m._stop_custom), (None, None))
+        m = model("catboost", "classification", n_classes=3, eval_metric="f1_macro", max_rounds=50, custom_eval=True)
         m.fit(X.iloc[:300], y[:300], X.iloc[300:], y[300:])
-        self.assertIn("TotalF1", m.eval_note_)  # у CatBoost встроенная — работает и без флага
+        self.assertIn("TotalF1", m.eval_note_)  # с флагом — встроенная метрика CatBoost
 
     def test_native_metrics_and_approximations(self):
         X, y = make_data("regression", n=400)

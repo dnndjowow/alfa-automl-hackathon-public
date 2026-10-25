@@ -23,10 +23,10 @@ _REG_WORDS = re.compile(r"регресс|regress", re.IGNORECASE)
 _ID_NAME = re.compile(r"id|index|row_?id|uid|\w+_id", re.IGNORECASE)
 
 def _f1_variant(kind: str) -> str:
-    """macro F1 во всех встреченных написаниях: «macro F1», «macro-averaged F1», «F1-score (macro)», «F1-мера macro»."""
+    """macro F1 во всех встреченных написаниях: «macro F1», «macro-averaged F1», «F1-score (macro)», «F1-мера macro», «по F1-мере (macro)»."""
     return (rf"f1_score\s*\([^)]*average\s*=\s*[\"']{kind}[\"']\s*\)"
             rf"|{kind}[\s_-]*(?:averaged[\s_-]+)?f1"
-            rf"|f1(?:[\s_-]*(?:score|мера))?[\s_-]*\(?\s*{kind}"
+            rf"|f1(?:[\s_-]*(?:score|мер\w*))?[\s_-]*\(?\s*{kind}"
             rf"|average\s*=\s*[\"']{kind}[\"']")
 
 
@@ -42,7 +42,7 @@ _METRIC_PATTERNS = {
     "f1_macro": _f1_variant("macro"),
     "f1_weighted": _f1_variant("weighted"),
     "f1_micro": _f1_variant("micro"),
-    "f1": r"\bf1(?:[\s_-]*(?:score|мера))?\b",
+    "f1": r"\bf1(?:[\s_-]*(?:score|мер\w*))?\b",
     "logloss": r"log[\s_-]*loss|cross[\s_-]*entropy",
     "rmsle": r"\brmsle\b|root mean squared log\w*(?: error)?|rmse\s+(?:между\s+|of\s+(?:the\s+)?)(?:log|логарифм)\w*",
     "msle": r"\bmsle\b|mean squared log\w* error",

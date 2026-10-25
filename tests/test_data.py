@@ -131,6 +131,24 @@ class PreprocessorTransformTest(unittest.TestCase):
         self.assertIsNone(parse_dates(pd.Series([20200101, 20200102])))
         self.assertIsNotNone(parse_dates(pd.Series(["01.02.2020", "15.03.2021"])))
 
+    def test_day_first_dates_keep_day_and_month(self):
+        # ревью Ивана (25.10, №1): «дд/мм/гггг» и «дд.мм.гггг» читались как «мм.дд», у 36% строк неверный месяц
+        from ml_data import parse_dates
+        days = pd.Series(pd.date_range("2020-01-01", periods=400))
+        for fmt in ("%d/%m/%Y", "%d.%m.%Y", "%m/%d/%Y", "%Y-%m-%d", "%d-%m-%Y %H:%M"):
+            parsed = parse_dates(pd.Series(days.dt.strftime(fmt)))
+            self.assertTrue((parsed.dt.normalize() == days).all(), fmt)
+        # все поля не больше 12: с точкой день первым (русский формат)
+        ambiguous = pd.Series(["05.01.2020", "06.01.2020", "07.02.2020"])
+        self.assertEqual(list(parse_dates(ambiguous).dt.month), [1, 1, 2])
+
+    def test_test_dates_are_read_like_train(self):
+        # в test могут быть только неоднозначные даты: порядок дня и месяца берётся из train
+        train = pd.DataFrame({"when": ["13/01/2020", "25/02/2020", "03/03/2020"], "x": [1, 2, 3]})
+        pre = TabularPreprocessor().fit(train)
+        out = pre.transform(pd.DataFrame({"when": ["05/04/2021"], "x": [4]}))
+        self.assertEqual((out.loc[0, "when__month"], out.loc[0, "when__year"]), (4.0, 2021.0))
+
     def test_mixed_type_column_becomes_text_categories(self):
         df = pd.DataFrame({"m": [1, "a", 1, "a", 2.5]})
         pre = TabularPreprocessor().fit(df)

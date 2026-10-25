@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from sklearn.model_selection import GroupKFold, KFold, StratifiedGroupKFold, StratifiedKFold
 
-from ml_data import date_days
+from ml_data import date_days, to_dates
 
 STRATEGIES = ("temporal", "group", "stratified", "kfold")
 
@@ -34,8 +34,11 @@ class Splits(list):
 
 
 def row_groups(X: pd.DataFrame) -> np.ndarray:
-    """Одинаковые по признакам строки получают один и тот же номер группы."""
-    return pd.util.hash_pandas_object(X, index=False).to_numpy()
+    """Одинаковые по признакам строки получают один и тот же номер группы.
+
+    Номера идут по первому появлению строки, а не по значению хэша: от номеров зависит, в какой фолд
+    попадёт группа, и при добавлении признаков (группы те же) фолды не должны меняться."""
+    return pd.factorize(pd.util.hash_pandas_object(X, index=False))[0]
 
 
 def suggest_validation(profile: dict, X_train: pd.DataFrame = None, n_splits: int = 5,
@@ -88,8 +91,7 @@ def _time_values(series: pd.Series) -> np.ndarray:
     """Числа как есть, текстовые даты — в днях от 1970-01-01."""
     if pd.api.types.is_numeric_dtype(series):
         return series.to_numpy(dtype=float)
-    parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce", format="mixed")
-    return date_days(parsed).to_numpy(dtype=float)
+    return date_days(to_dates(series)).to_numpy(dtype=float)
 
 
 def _temporal(plan, X):
