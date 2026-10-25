@@ -230,11 +230,12 @@ def read_csv(path, text_columns=()) -> pd.DataFrame:
     return frame
 
 
-def numeric_text_columns(frame: pd.DataFrame) -> list:
+def numeric_text_columns(frame: pd.DataFrame, strict=()) -> list:
     """Текстовые столбцы, которые на самом деле числовые: не меньше 95% непустых значений — числа,
     остальное — метки пропуска («NA», «?», «null», пробелы) и не больше max(2, 0.1%) строк единичного
     мусора с одним-двумя значениями. Больше нечисловых строк — это законная категория (например,
-    редкий класс «A» в таргете из «1»/«2»/«3»), и столбец остаётся текстом."""
+    редкий класс «A» в таргете из «1»/«2»/«3»), и столбец остаётся текстом.
+    strict — столбцы, где мусора не бывает (возможные таргеты): одно «A» — это класс, а не опечатка."""
     found = []
     for col in frame.columns:
         values = frame[col]
@@ -245,10 +246,19 @@ def numeric_text_columns(frame: pd.DataFrame) -> list:
         if not len(rest):
             continue
         bad = rest[pd.to_numeric(rest, errors="coerce").isna()]
+        if col in strict and len(bad):
+            continue
         if (1 - len(bad) / len(rest) >= _NUMERIC_SHARE and len(bad) <= max(_JUNK_ROWS, _JUNK_SHARE * len(rest))
                 and bad.nunique() <= _JUNK_VALUES):
             found.append(col)
     return found
+
+
+def _classification_task(text: str) -> bool:
+    """Классификация по тексту задачи: семейство основной метрики, иначе слова «классификация»/«регрессия»."""
+    import ml_schema  # здесь, а не наверху: ml_schema — уровень выше чтения файлов
+    family = ml_schema.metric_family(ml_schema.mentioned_metrics(text or "").get("primary"))
+    return (family or ml_schema._text_hint(text or "")) == "classification"
 
 
 def _to_numeric(values: pd.Series) -> pd.Series:
@@ -285,7 +295,13 @@ def load_task(task_md) -> TaskData:
         return data
     if files.train_labels is not None:
         _attach_labels(data)
-    numeric = numeric_text_columns(data.train)
+    # столбцы только из train — возможные таргеты: в них «мусор» — это класс. В классификации их не трогаем
+    # совсем («NA» — законный класс: пропуск по условию — пустая ячейка), в регрессии переводим только
+    # столбцы из чисел и меток пропуска (Y1: «NA» в числовом таргете ломал регрессию)
+    target_like = [c for c in data.train.columns if data.test is None or c not in data.test.columns]
+    numeric = numeric_text_columns(data.train, strict=target_like)
+    if _classification_task(data.text):
+        numeric = [c for c in numeric if c not in target_like]
     if data.test is not None:
         numeric += [c for c in data.test.columns
                     if c in data.train.columns and c not in numeric
