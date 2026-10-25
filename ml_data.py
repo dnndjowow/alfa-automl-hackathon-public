@@ -130,9 +130,9 @@ def parse_dates(series: pd.Series) -> Optional[pd.Series]:
     if not iso and text.str.match(_ANY_DATE).mean() < _DATE_SHARE:
         return None
     if iso:
-        parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce", format="ISO8601")
-        if getattr(parsed.dt, "tz", None) is not None:
-            parsed = parsed.dt.tz_convert(None)
+        # utc=True: смешанные смещения (+01:00 зимой, +02:00 летом) иначе дают object, и .dt падал
+        parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce",
+                                format="ISO8601", utc=True).dt.tz_convert(None)
     else:
         parsed = to_dates(series)
     return parsed if parsed[series.notna()].notna().mean() >= _DATE_SHARE else None
@@ -163,10 +163,8 @@ def to_dates(series: pd.Series, dayfirst: Optional[bool] = None) -> pd.Series:
     if dayfirst is None:
         dayfirst = date_dayfirst(series)
     values = series.astype(str).str.strip().where(series.notna())
-    parsed = pd.to_datetime(values, errors="coerce", format="mixed", dayfirst=dayfirst)
-    if getattr(parsed.dt, "tz", None) is not None:
-        parsed = parsed.dt.tz_convert(None)
-    return parsed
+    # utc=True — общая шкала для дат со смещениями (в том числе разными); даты без смещения не сдвигаются
+    return pd.to_datetime(values, errors="coerce", format="mixed", dayfirst=dayfirst, utc=True).dt.tz_convert(None)
 
 
 def date_days(parsed: pd.Series) -> pd.Series:
