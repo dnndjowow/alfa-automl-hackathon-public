@@ -112,6 +112,16 @@ def _resolve_task_and_metric(profile: dict, task_type, metric):
     return kind, resolved, source
 
 
+def _suggested_plan(profile: dict, X: pd.DataFrame, kind: str) -> dict:
+    """suggest_validation по уже разрешённому семейству задачи: явный task_type важнее типа в профиле
+    (иначе профиль binary при task_type='regression' давал stratified без y и ValidationError)."""
+    task = dict(profile.get("task") or {})
+    if (task.get("type") in ("binary", "multiclass")) != (kind == "classification"):
+        task["type"] = "multiclass" if kind == "classification" else "regression"
+        profile = {**profile, "task": task}
+    return ml_validation.suggest_validation(profile, X)
+
+
 def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric: Optional[str] = None,
                validation: Optional[dict] = None, params: Optional[dict] = None,
                task_type: Optional[str] = None, target_transform: Optional[str] = None,
@@ -143,7 +153,7 @@ def train_eval(split: SplitData, profile: dict, model: str = "lightgbm", metric:
             notes.append(f"использована случайная подвыборка train: {len(X)} строк")
         codec, target = _prepare_target(y, kind, target_transform)
         n_classes = len(codec.classes_) if codec else 0
-        plan = dict(validation or ml_validation.suggest_validation(profile, X))
+        plan = dict(validation or _suggested_plan(profile, X, kind))
         splits = ml_validation.make_splits(plan, X, target if kind == "classification" else None, seed=seed)
         plan["effective"] = splits.effective()
 
@@ -228,7 +238,7 @@ def _auto_rounds(X, target, kind, profile, n_classes, model, params, n_jobs, see
     validation — схема от вызывающего кода (иначе suggest_validation). Сбой одной части не роняет
     подбор; если не удалась ни одна, поднимается ValueError. Возвращает (раунды, схема, заметки)."""
     started = time.time()
-    plan = dict(validation or ml_validation.suggest_validation(profile, X))
+    plan = dict(validation or _suggested_plan(profile, X, kind))
     splits = ml_validation.make_splits(plan, X, target if kind == "classification" else None, seed=seed)
     iterations, notes = [], []
     for number, (tr, va) in enumerate(splits):

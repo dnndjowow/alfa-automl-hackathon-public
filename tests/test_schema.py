@@ -56,6 +56,19 @@ class SyntheticSchemaTest(unittest.TestCase):
         with self.assertRaises(ms.SchemaError):
             ms.resolve_schema(suggestion, target_cols=["no_such_column"])
 
+    def test_composite_id_is_found(self):
+        # код-ревью 25.10 (F11): пара account+period уникальна, по отдельности нет — id не находился
+        train = pd.DataFrame({"account": [1, 1, 2, 2], "period": [1, 2, 1, 2], "x": [1, 2, 3, 4], "y": [0, 1, 0, 1]})
+        test = pd.DataFrame({"account": [3, 3, 4, 4], "period": [1, 2, 1, 2], "x": [5, 6, 7, 8]})
+        sample = pd.DataFrame({"account": [3, 3, 4, 4], "period": [1, 2, 1, 2], "y": 0})
+        s = ms.infer_schema(train, test, sample)
+        self.assertEqual((s["id_cols"], s["target_cols"]), (["account", "period"], ["y"]))
+        self.assertNotEqual(s["confidence"], "low")
+        self.assertEqual(ms.resolve_schema(s).feature_cols, ("x",))
+        # повторы пары — это не ключ
+        dup = test.assign(period=[1, 1, 2, 2])
+        self.assertEqual(ms.infer_schema(train, dup, sample.assign(period=[1, 1, 2, 2]))["id_cols"], [])
+
     def test_no_target_found(self):
         data = self.load(kind="regression")
         suggestion = ms.infer_schema(data.test, data.test)
@@ -89,6 +102,15 @@ class TaskTypeTest(unittest.TestCase):
         self.assertEqual(ms.suggest_task_type(y, "Постройте регрессионную модель")["type"], "regression")
         confirmed = ms.suggest_task_type(y, "Задача многоклассовой классификации")
         self.assertEqual((confirmed["type"], confirmed["ambiguous"]), ("multiclass", False))
+
+    def test_many_integer_classes_follow_a_classification_metric(self):
+        # код-ревью 25.10 (F13): 201 целый класс с Macro F1 определялся как регрессия
+        y = pd.Series(np.tile(np.arange(201), 3))
+        hint = ms.suggest_task_type(y, "Многоклассовая классификация. Основная метрика — Macro F1", "f1_macro")
+        self.assertEqual((hint["type"], hint["ambiguous"]), ("multiclass", False))
+        # без метрики, по одному тексту — по-прежнему регрессия с пометкой
+        self.assertEqual(ms.suggest_task_type(y, "Многоклассовая классификация")["type"], "regression")
+        self.assertEqual(ms.suggest_task_type(y, "", "rmse")["type"], "regression")
 
     def test_text_conflict_with_clear_data_keeps_data(self):
         y = pd.Series(np.random.default_rng(2).normal(size=100))

@@ -228,6 +228,19 @@ class SyntheticToolsTest(unittest.TestCase):
         logged = mt.train_eval(split, profile, metric="mae", target_transform="log1p", **FAST)
         self.assertFalse(any("ранняя остановка" in n for n in logged.notes))  # при log1p — метрика библиотеки
 
+    def test_task_type_override_drives_the_validation_choice(self):
+        # код-ревью 25.10 (F14): профиль binary + task_type='regression' без n_rounds — авто-раунды выбирали
+        # stratified без y и падали «для стратификации нужен y»
+        from ml_data import SplitData
+        from ml_schema import Schema
+        X = pd.DataFrame({"x": np.arange(100.0)})
+        split = SplitData(X, pd.Series([1.0, 2.0] * 50), X.iloc[:5], pd.DataFrame(index=range(5)), Schema((), ("y",), ("x",)))
+        profile = {"task": {"type": "binary"}, "metric": {"primary": None}}
+        out = mt.fit_predict(split, profile, task_type="regression", max_rounds=10, n_jobs=1)
+        self.assertEqual(out["status"], "ok", out.get("error"))
+        ev = mt.train_eval(split, profile, task_type="regression", max_rounds=10, n_jobs=1)
+        self.assertEqual(ev.status, "ok", ev.error)
+
     def test_classes_keep_original_label_types_in_eval_and_fit(self):
         # просьба Ивана (R6): классы одного типа в train_eval и fit_predict, числовые метки остаются числами
         split, profile, _ = self.prepare(kind="multiclass", n_train=300)

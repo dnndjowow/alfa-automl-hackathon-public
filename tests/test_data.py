@@ -142,6 +142,36 @@ class PreprocessorTransformTest(unittest.TestCase):
         ambiguous = pd.Series(["05.01.2020", "06.01.2020", "07.02.2020"])
         self.assertEqual(list(parse_dates(ambiguous).dt.month), [1, 1, 2])
 
+    def test_dates_with_mixed_utc_offsets(self):
+        # код-ревью 25.10 (F08): смещения +01:00 и +02:00 (зима/лето) давали object и AttributeError в .dt
+        X = pd.DataFrame({"t": ["2020-01-01T00:00:00+01:00", "2020-06-01T00:00:00+02:00"] * 5, "x": range(10)})
+        pre = TabularPreprocessor().fit(X)
+        self.assertEqual(pre.datetime_cols_, ["t"])
+        out = pre.transform(X)
+        self.assertEqual(list(out["t__month"].iloc[:2]), [12.0, 5.0])  # в UTC: 31.12 23:00 и 31.05 22:00
+        from ml_data import parse_dates
+        plain = parse_dates(pd.Series(["2020-01-01", "2020-06-01"]))
+        self.assertEqual(list(plain.dt.month), [1, 6])  # даты без смещения не сдвигаются
+
+    def test_text_codes_1_and_1_0_stay_different(self):
+        # код-ревью 25.10 (F10): строки «1» и «1.0» в одном train склеивались в одну категорию
+        X = pd.DataFrame({"code": ["1", "1.0", "A"] * 10})
+        pre = TabularPreprocessor().fit(X)
+        self.assertEqual(sorted(pre.categories_["code"]), ["1", "1.0", "A"])
+        # числа из другого файла (1 и 1.0) по-прежнему совпадают
+        pre = TabularPreprocessor().fit(pd.DataFrame({"code": pd.Series(["1", "2", "A"] * 5, dtype=object)}))
+        out = pre.transform(pd.DataFrame({"code": [1.0, 2.0, np.nan]}), categorical="codes")
+        self.assertEqual(list(out["code"].iloc[:2] >= 0), [True, True])
+
+    def test_date_part_names_do_not_collide_with_columns(self):
+        # код-ревью 25.10 (F09): существующий when__year перезаписывал вычисленный год, имя повторялось
+        X = pd.DataFrame({"when": ["2020-01-01", "2021-02-01", "2022-03-01"], "when__year": [100, 200, 300]})
+        pre = TabularPreprocessor().fit(X)
+        out = pre.transform(X)
+        self.assertEqual(len(out.columns), len(set(out.columns)))
+        self.assertEqual(list(out["when__year"]), [100.0, 200.0, 300.0])     # исходный столбец цел
+        self.assertEqual(list(out["when__year_"]), [2020.0, 2021.0, 2022.0])  # вычисленный год под своим именем
+
     def test_test_dates_are_read_like_train(self):
         # в test могут быть только неоднозначные даты: порядок дня и месяца берётся из train
         train = pd.DataFrame({"when": ["13/01/2020", "25/02/2020", "03/03/2020"], "x": [1, 2, 3]})

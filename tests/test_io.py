@@ -223,6 +223,22 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         self.assertEqual(int((data.train["target"].astype(str) == "A").sum()), 4)
         self.assertFalse(data.train["target"].isna().any())
 
+    def test_target_class_is_kept_whatever_the_junk_rule_says(self):
+        # код-ревью 25.10 (F02): одиночный класс «A» считался мусором, а класс «NA» в классификации — пропуском
+        for labels, text in ((["1", "2"] * 50 + ["A"], "`train.csv` `test.csv`"),
+                             (["1", "2"] * 50 + ["NA"] * 30, "Классификация, основная метрика — Macro F1. `train.csv` `test.csv`")):
+            rows = ["id,x,target"] + [f"{i},{i * 0.5},{label}" for i, label in enumerate(labels)]
+            root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,x\n500,1.5\n"}, text)
+            data = ml_io.load_task(root / "task.md")
+            self.assertFalse(data.train["target"].isna().any(), labels[-1])
+            self.assertEqual(int((data.train["target"].astype(str) == labels[-1]).sum()), labels.count(labels[-1]))
+        # регрессия: «NA» в числовом таргете — по-прежнему пропуск (Y1)
+        rows = ["id,x,y"] + [f"{i},{i},{'NA' if i % 10 == 0 else i * 2}" for i in range(100)]
+        root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,x\n500,1\n"},
+                               "Регрессия, основная метрика — RMSE. `train.csv` `test.csv`")
+        data = ml_io.load_task(root / "task.md")
+        self.assertTrue(pd.api.types.is_float_dtype(data.train["y"]))
+
     def test_single_junk_value_still_becomes_numeric(self):
         # единичный мусор (не больше max(2, 0.1%) строк, одно-два значения) по-прежнему не мешает
         rows = ["id,x,y"] + [f"{i},{'oops' if i == 3 else i * 0.5},{i}" for i in range(200)]

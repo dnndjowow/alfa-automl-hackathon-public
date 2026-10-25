@@ -102,6 +102,16 @@ def infer_schema(train, test=None, sample_submission=None, dictionary=None) -> d
             if c in test.columns and roles.get(c) != "target" and test[c].is_unique
             and set(sample_submission[c].astype(str)) == set(test[c].astype(str))
         ]
+        if not id_cols:
+            # составной ключ (клиент + месяц): каждый столбец по отдельности не уникален, а вместе — уникальны
+            parts = [
+                c for c in sample_submission.columns
+                if c in test.columns and roles.get(c) != "target"
+                and set(sample_submission[c].astype(str)) == set(test[c].astype(str))
+            ]
+            if len(parts) >= 2 and not test[parts].duplicated().any():
+                id_cols = parts
+                notes.append(f"id — составной ключ {parts}: по отдельности столбцы не уникальны")
         if id_cols:
             sources["id"] = "значения sample_submission совпадают с test"
             if not all(np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy()) for c in id_cols):
@@ -179,7 +189,10 @@ def resolve_schema(suggestion: dict, id_cols=None, target_cols=None) -> Schema:
     unknown = [c for c in targets + ids if c not in known]
     if unknown:
         raise SchemaError(f"столбцов {unknown} нет в данных задачи")
-    features = tuple(c for c in pool if c not in ids and c not in targets)
+    # без переопределения берём признаки подсказки: в схеме, заданной вызывающим (confidence given),
+    # их выбор отличается от всех общих столбцов, и прежде он терялся при повторном resolve
+    chosen = suggestion.get("feature_cols") if not overridden and suggestion.get("feature_cols") is not None else pool
+    features = tuple(c for c in chosen if c not in ids and c not in targets)
     output = suggestion.get("output_columns")
     return Schema(tuple(ids), tuple(targets), features, tuple(output) if output else None)
 
@@ -214,12 +227,17 @@ def suggest_task_type(y: Optional[pd.Series], text: str = "", metric: Optional[s
         kind, firm = ("multiclass" if n_unique <= _DEFAULT_INT_CLASSES else "regression"), False
     else:
         kind, firm = "regression", True
+    # целые коды с сотнями значений (товар, категория) тоже бывают классами: явная метрика классификации
+    # перевешивает (было: 201 класс с Macro F1 оставался регрессией); слабый довод текста — нет
+    many_int_codes = numeric and kind == "regression" and n_unique > _MAX_INT_CLASSES and bool((values % 1 == 0).all())
 
     evidence, source = None, None
     if metric:
         evidence, source = metric_family(metric), f"метрика {metric}"
         if evidence is None:
             notes.append(f"метрика {metric!r} неизвестна, тип по ней не определить")
+        elif many_int_codes:
+            firm = False
     if evidence is None:
         evidence, source = _text_hint(text), "текст задачи"
     family = "regression" if kind == "regression" else "classification"

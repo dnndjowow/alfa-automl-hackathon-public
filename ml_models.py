@@ -29,7 +29,7 @@ class ModelError(ValueError):
 # синонимы в params роняли бы fit_predict или молча урезали модель.
 _ROUND_PARAMS = {
     "n_estimators", "num_boost_round", "num_iterations", "num_iteration", "num_trees", "num_tree",
-    "num_round", "num_rounds", "n_iter", "max_iter", "iterations", "max_iterations",
+    "num_round", "num_rounds", "nrounds", "n_iter", "max_iter", "iterations", "max_iterations",
     "early_stopping", "early_stopping_round", "early_stopping_rounds", "n_iter_no_change", "od_wait", "od_type",
 }
 # CatBoost падает на параметрах LightGBM/XGBoost: известные переводим, остальные убираем
@@ -106,7 +106,7 @@ def prepare_params(name: str, task: str, params: Optional[dict]):
     for key, value in dict(params or {}).items():
         if key in _ROUND_PARAMS:
             notes.append(f"параметр {key!r} убран: число раундов и раннюю остановку задаёт код")
-        elif key in ("boosting_type", "boosting", "booster") and str(value).lower() == "dart":
+        elif key in ("boosting_type", "boosting", "boost", "booster") and str(value).lower() == "dart":
             notes.append(f"{key}='dart' убран: в этом режиме не работает ранняя остановка и уходит весь бюджет")
         elif name == "catboost" and key in _CATBOOST_DROP:
             notes.append(f"параметр {key!r} не поддерживается CatBoost и убран")
@@ -344,8 +344,17 @@ class BoostingModel:
         )
         if Xv is not None:
             params["early_stopping_rounds"] = self.early_stopping_rounds
+            # явно: CatBoost сам выключает use_best_model, например при постоянном таргете валидации, и тогда
+            # предсказывал всеми деревьями, а сообщал лучшую итерацию (RMSE 2.84 против 0.29 у лучшего префикса)
+            params["use_best_model"] = True
             if self._stop_native:
-                params["eval_metric"] = self._stop_native
+                native = self._stop_native
+                weighted = any(k in self.params for k in ("auto_class_weights", "class_weights", "scale_pos_weight"))
+                if weighted and native.startswith(("TotalF1", "Accuracy")):
+                    # метрика задачи невзвешенная, а при весах классов CatBoost по умолчанию взвешивает и её;
+                    # без весов параметр use_weights CatBoost не принимает
+                    native += (";" if ":" in native else ":") + "use_weights=false"
+                params["eval_metric"] = native
         params.update(self.params)
         cls = CatBoostRegressor if self.task == "regression" else CatBoostClassifier
         self.model_ = cls(**params)

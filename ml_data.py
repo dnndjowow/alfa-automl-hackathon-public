@@ -107,7 +107,12 @@ class LabelCodec:
 def category_text(series: pd.Series) -> pd.Series:
     """Значения категории как текст; целые числа без «.0», чтобы 1 из одного файла и 1.0 из другого совпали."""
     text = series.astype(str).where(series.notna())
-    return text.str.replace(r"^(-?\d+)\.0$", r"\1", regex=True)
+    whole = text.str.replace(r"^(-?\d+)\.0$", r"\1", regex=True)
+    if pd.api.types.is_numeric_dtype(series):
+        return whole
+    # в текстовом столбце «1» и «1.0» — разные законные коды: нормализуем только настоящие числа
+    numbers = series.map(lambda v: isinstance(v, (int, float, np.number)) and not isinstance(v, (bool, np.bool_)))
+    return whole.where(numbers, text)
 
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$")
@@ -130,9 +135,9 @@ def parse_dates(series: pd.Series) -> Optional[pd.Series]:
     if not iso and text.str.match(_ANY_DATE).mean() < _DATE_SHARE:
         return None
     if iso:
-        parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce", format="ISO8601")
-        if getattr(parsed.dt, "tz", None) is not None:
-            parsed = parsed.dt.tz_convert(None)
+        # utc=True: смешанные смещения (+01:00 зимой, +02:00 летом) иначе дают object, и .dt падал
+        parsed = pd.to_datetime(series.astype(str).str.strip().where(series.notna()), errors="coerce",
+                                format="ISO8601", utc=True).dt.tz_convert(None)
     else:
         parsed = to_dates(series)
     return parsed if parsed[series.notna()].notna().mean() >= _DATE_SHARE else None
@@ -163,10 +168,8 @@ def to_dates(series: pd.Series, dayfirst: Optional[bool] = None) -> pd.Series:
     if dayfirst is None:
         dayfirst = date_dayfirst(series)
     values = series.astype(str).str.strip().where(series.notna())
-    parsed = pd.to_datetime(values, errors="coerce", format="mixed", dayfirst=dayfirst)
-    if getattr(parsed.dt, "tz", None) is not None:
-        parsed = parsed.dt.tz_convert(None)
-    return parsed
+    # utc=True — общая шкала для дат со смещениями (в том числе разными); даты без смещения не сдвигаются
+    return pd.to_datetime(values, errors="coerce", format="mixed", dayfirst=dayfirst, utc=True).dt.tz_convert(None)
 
 
 def date_days(parsed: pd.Series) -> pd.Series:
@@ -210,9 +213,22 @@ class TabularPreprocessor:
                 self.categories_[col] = [k for k, _ in order]
                 self.categorical_cols_.append(col)
         self.input_cols_ = [c for c in X.columns if c not in self.dropped_]
+        # имена частей даты не должны совпадать с уже существующими столбцами (when__year в данных):
+        # иначе вычисленный год перезаписывался исходным столбцом, а LightGBM падал на повторе имени
+        taken = {str(c) for c in self.input_cols_ if c not in self.datetime_cols_}
+        self.date_names_ = {}
+        for c in self.datetime_cols_:
+            names = {}
+            for part in DATE_PARTS:
+                name = f"{c}__{part}"
+                while name in taken:
+                    name += "_"
+                taken.add(name)
+                names[part] = name
+            self.date_names_[c] = names
         self.feature_names_ = [
             name for c in self.input_cols_
-            for name in ([f"{c}__{part}" for part in DATE_PARTS] if c in self.datetime_cols_ else [c])
+            for name in (list(self.date_names_[c].values()) if c in self.datetime_cols_ else [c])
         ]
         if not self.feature_names_:
             raise DataError("после удаления пустых и константных столбцов признаков не осталось")
@@ -236,10 +252,11 @@ class TabularPreprocessor:
                 values = X[col]
             if col in self.datetime_cols_:
                 parsed = to_dates(values, self.dayfirst_.get(col, False))
-                out[f"{col}__days"] = date_days(parsed).astype("float64")
-                out[f"{col}__year"] = parsed.dt.year.astype("float64")
-                out[f"{col}__month"] = parsed.dt.month.astype("float64")
-                out[f"{col}__dayofweek"] = parsed.dt.dayofweek.astype("float64")
+                names = self.date_names_[col]
+                out[names["days"]] = date_days(parsed).astype("float64")
+                out[names["year"]] = parsed.dt.year.astype("float64")
+                out[names["month"]] = parsed.dt.month.astype("float64")
+                out[names["dayofweek"]] = parsed.dt.dayofweek.astype("float64")
             elif col in self.categorical_cols_:
                 present = values.notna()
                 text = category_text(values)

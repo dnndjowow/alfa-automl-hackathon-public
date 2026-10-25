@@ -109,18 +109,18 @@ def _temporal(plan, X):
         # каждая часть — одно значение (например, год); учимся на более ранних (или поздних)
         blocks = [(v, v) for v in (uniq[:k][::-1] if backward else uniq[-k:])]
     else:
-        # много значений (даты): k последних (или первых) блоков по 1/(k+2) строк
-        edges = np.quantile(known, np.linspace(0, 1, k + 3))
-        pairs = list(zip(edges[:-1], edges[1:]))
-        blocks = pairs[:k][::-1] if backward else pairs[-k:]
+        # много значений (даты): k последних (или первых) блоков примерно по 1/(k+2) строк. Блоки — из целых
+        # значений времени и не пересекаются: при скоплении строк на одной дате квантили давали одинаковые
+        # края и одну и ту же часть несколько раз (OOF с повторами, у агента падала смесь)
+        counts = np.unique(known, return_counts=True)[1]
+        middle = (np.cumsum(counts) - counts / 2) / len(known)
+        chunk = np.minimum((middle * (k + 2)).astype(int), k + 1)
+        bounds = [(uniq[chunk == c].min(), uniq[chunk == c].max()) for c in np.unique(chunk)]
+        blocks = bounds[:-1][:k][::-1] if backward else bounds[1:][-k:]
     splits = []
-    for low, high in blocks:
-        last = high == known.max() or low == high
-        valid = np.flatnonzero((values >= low) & ((values <= high) if last else (values < high)))
-        if backward:
-            train = np.flatnonzero(values > high) if low == high else np.flatnonzero(values >= high)
-        else:
-            train = np.flatnonzero(values < low)
+    for low, high in blocks:   # блоки — непересекающиеся отрезки значений времени, концы включены
+        valid = np.flatnonzero((values >= low) & (values <= high))
+        train = np.flatnonzero(values > high) if backward else np.flatnonzero(values < low)
         if len(train) and len(valid):
             splits.append((train, valid))
     return Splits(splits, "temporal", len(splits))
@@ -189,8 +189,16 @@ def _group_stratified(y: np.ndarray, groups: np.ndarray, n_splits: int, seed: in
             valid[i % n_splits].append(np.array([idx]))
     if len(multi):
         multi_groups = groups[multi]
+        folds = None
         if len(np.unique(multi_groups)) >= n_splits:
-            folds = StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed).split(multi, y[multi], multi_groups)
+            # редкие среди копий классы объединяются, как и для строк без копий: глобально частых классов
+            # в этом подмножестве может не быть, и SGKF падал «n_splits больше числа членов каждого класса»
+            strata, _ = _strata(y[multi], n_splits)
+            try:
+                folds = list(StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed).split(multi, strata, multi_groups))
+            except ValueError:
+                folds = None  # даже объединённых мало: группы по кругу, как при малом числе групп
+        if folds is not None:
             for i, (_, va) in enumerate(folds):
                 valid[i].append(multi[va])
         else:

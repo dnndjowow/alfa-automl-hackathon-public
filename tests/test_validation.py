@@ -168,6 +168,43 @@ class SplitsTest(unittest.TestCase):
             self.assertEqual(len(set(keys.iloc[train]) & set(keys.iloc[valid])), 0)
         self.assertLess(elapsed, 5.0)  # на M2 ~1 с, на i5-11400F ~2.1 с; прежняя версия была в 8 раз медленнее
 
+    def test_temporal_blocks_do_not_repeat_when_rows_pile_up_on_one_date(self):
+        # код-ревью 25.10 (F03): 59 дат по одной строке и 941 строка на последней дате — квантили давали
+        # одинаковые края и три одинаковые части (OOF 2823 позиции при 941 уникальной)
+        dates = pd.Timestamp("2020-01-01") + pd.to_timedelta(np.r_[np.arange(59), np.full(941, 59)], unit="D")
+        X = pd.DataFrame({"date": dates.strftime("%Y-%m-%d")})
+        for direction in ("forward", "backward"):
+            splits = mv.make_splits({"strategy": "temporal", "column": "date", "n_splits": 3, "direction": direction}, X)
+            valid = np.concatenate([v for _, v in splits])
+            self.assertEqual(len(valid), len(np.unique(valid)), direction)
+            for train, v in splits:
+                self.assertEqual(len(np.intersect1d(train, v)), 0)
+        # равномерные даты: три непересекающиеся части, train строго раньше валидации
+        X = pd.DataFrame({"date": pd.date_range("2020-01-01", periods=400).strftime("%Y-%m-%d")})
+        splits = mv.make_splits({"strategy": "temporal", "column": "date", "n_splits": 3}, X)
+        self.assertEqual(len(splits), 3)
+        valid = np.concatenate([v for _, v in splits])
+        self.assertEqual(len(valid), len(np.unique(valid)))
+        days = pd.to_datetime(X["date"])
+        for train, v in splits:
+            self.assertLess(days.iloc[train].max(), days.iloc[v].min())
+
+    def test_group_split_survives_rare_classes_among_copies(self):
+        # код-ревью 25.10 (F04): SGKF на подмножестве строк-копий падал ValueError, когда все классы
+        # среди копий реже числа частей (регрессия 5271515)
+        X = pd.DataFrame({"a": np.r_[np.arange(100), np.repeat(np.arange(1000, 1006), 2)].astype(float)})
+        y = np.r_[np.repeat([0, 1], 50), np.repeat([2, 3, 4], 4)]
+        splits = mv.make_splits({"strategy": "group", "n_splits": 5, "classification": True}, X, y)
+        self.assertEqual(len(splits), 5)
+        self.assertEqual(len(self.check_partition(splits, len(X))), len(X))
+        keys = pd.Series(mv.row_groups(X))
+        for train, valid in splits:
+            self.assertEqual(len(set(keys.iloc[train]) & set(keys.iloc[valid])), 0)
+        # копий совсем мало: даже объединённая страта меньше числа частей — группы по кругу, без падения
+        X2 = pd.DataFrame({"a": np.r_[np.arange(60), [1000, 1000, 1001, 1001, 1002, 1002, 1003, 1003, 1004, 1004]].astype(float)})
+        y2 = np.r_[np.repeat([0, 1], 30), [2, 2, 3, 3, 2, 2, 3, 3, 2, 2]]
+        self.assertEqual(len(mv.make_splits({"strategy": "group", "n_splits": 5, "classification": True}, X2, y2)), 5)
+
     def test_group_folds_do_not_change_when_features_are_added(self):
         # ревью Ивана (25.10, row_groups): номер группы был хэшем строки, и после добавления признаков
         # фолды перемешивались, хотя группы прежние; сравнение наборов признаков шло на разных фолдах

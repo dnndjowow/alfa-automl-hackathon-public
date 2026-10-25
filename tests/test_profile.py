@@ -139,6 +139,8 @@ class SyntheticProfileTest(unittest.TestCase):
         self.assertIn("classes", profile["target"])
         self.assertNotIn("b", [c["name"] for c in profile["features"]["columns"]])
         self.assertEqual(ml_schema.resolve_schema(profile["schema"]).target_cols, ("label",))
+        # код-ревью 25.10 (F18): повторный resolve возвращал исключённый признак b
+        self.assertNotIn("b", ml_schema.resolve_schema(profile["schema"]).feature_cols)
         with self.assertRaises(ml_schema.SchemaError):
             mp.build_profile(data, schema=ml_schema.Schema(("id",), ("nope",), ()))
 
