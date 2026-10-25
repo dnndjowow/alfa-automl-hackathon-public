@@ -513,8 +513,10 @@ class Session:
                 "metric_source": self.profile["metric"].get("source"),
                 "metric_computed_by": "агент" if self.profile["metric"].get("supported") is False else "ядро",
                 "answer_looks_like_probability": self.sample_suggests_proba(),
-                "validation_hint": (f"по условию test позже train: если временная схема не выбрана по столбцу "
-                                    f"времени, попробуй validation={{strategy: temporal, column: {ROW_ORDER}}}"
+                "validation_hint": (f"по условию test позже train. Если есть столбцы времени (год, месяц, дата) — "
+                                    f"лучше временная схема по ним. Иначе можно validation={{strategy: temporal, "
+                                    f"column: {ROW_ORDER}}}: номер строки станет и признаком; на одних данных это "
+                                    f"помогает, на других мешает — сравнивай с обычной схемой осторожно"
                                     if self.rows_look_time_ordered() else None),
             },
             "all_train_columns": [str(c) for c in self.data.train.columns] if self.data.train is not None else [],
