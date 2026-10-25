@@ -565,6 +565,14 @@ class AddFeaturesTest(unittest.TestCase):
             self.assertEqual(session.featureset, 0)
             self.assertNotIn(agent_tools.ROW_ORDER, session.setup["split"].X_train.columns)
 
+    def test_composite_id_is_unique_as_a_pair(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            frame = pd.DataFrame({"account": [1, 1, 2, 2], "period": [1, 2, 1, 2], "y": [0.1, 0.2, 0.3, 0.4]})
+            agent_tools.write_submission(frame, Path(tmp), 4, id_cols=("account", "period"))   # ревью Юры
+            self.assertTrue((Path(tmp) / "submission.csv").exists())
+            with self.assertRaises(agent_tools.SubmissionError):
+                agent_tools.write_submission(frame.assign(period=1), Path(tmp), 4, id_cols=("account", "period"))
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)

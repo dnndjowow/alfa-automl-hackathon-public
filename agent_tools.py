@@ -580,9 +580,9 @@ def write_submission(frame: pd.DataFrame, task_dir: Path, n_test: int, id_cols=(
         raise SubmissionError(f"строк в ответе {len(frame)}, а в test {n_test}")
     if frame.columns.duplicated().any():
         raise SubmissionError(f"повторяющиеся столбцы: {list(frame.columns)}")
-    for col in id_cols:
-        if col in frame.columns and frame[col].duplicated().any():
-            raise SubmissionError(f"повторяющиеся значения id в {col!r}")
+    ids = [c for c in id_cols if c in frame.columns]
+    if ids and frame.duplicated(subset=ids).any():   # составной id (account + period): уникальна пара, а не столбец
+        raise SubmissionError(f"повторяющиеся значения id {ids}")
     for col in frame.columns:
         values = frame[col]
         if values.isna().any():
