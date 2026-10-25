@@ -107,7 +107,12 @@ class LabelCodec:
 def category_text(series: pd.Series) -> pd.Series:
     """Значения категории как текст; целые числа без «.0», чтобы 1 из одного файла и 1.0 из другого совпали."""
     text = series.astype(str).where(series.notna())
-    return text.str.replace(r"^(-?\d+)\.0$", r"\1", regex=True)
+    whole = text.str.replace(r"^(-?\d+)\.0$", r"\1", regex=True)
+    if pd.api.types.is_numeric_dtype(series):
+        return whole
+    # в текстовом столбце «1» и «1.0» — разные законные коды: нормализуем только настоящие числа
+    numbers = series.map(lambda v: isinstance(v, (int, float, np.number)) and not isinstance(v, (bool, np.bool_)))
+    return whole.where(numbers, text)
 
 
 _ISO_DATE = re.compile(r"^\d{4}-\d{1,2}-\d{1,2}(?:[ T]\d{1,2}:\d{2}(?::\d{2}(?:\.\d+)?)?)?(?:Z|[+-]\d{2}:?\d{2})?$")

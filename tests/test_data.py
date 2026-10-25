@@ -153,6 +153,16 @@ class PreprocessorTransformTest(unittest.TestCase):
         plain = parse_dates(pd.Series(["2020-01-01", "2020-06-01"]))
         self.assertEqual(list(plain.dt.month), [1, 6])  # даты без смещения не сдвигаются
 
+    def test_text_codes_1_and_1_0_stay_different(self):
+        # код-ревью 25.10 (F10): строки «1» и «1.0» в одном train склеивались в одну категорию
+        X = pd.DataFrame({"code": ["1", "1.0", "A"] * 10})
+        pre = TabularPreprocessor().fit(X)
+        self.assertEqual(sorted(pre.categories_["code"]), ["1", "1.0", "A"])
+        # числа из другого файла (1 и 1.0) по-прежнему совпадают
+        pre = TabularPreprocessor().fit(pd.DataFrame({"code": pd.Series(["1", "2", "A"] * 5, dtype=object)}))
+        out = pre.transform(pd.DataFrame({"code": [1.0, 2.0, np.nan]}), categorical="codes")
+        self.assertEqual(list(out["code"].iloc[:2] >= 0), [True, True])
+
     def test_date_part_names_do_not_collide_with_columns(self):
         # код-ревью 25.10 (F09): существующий when__year перезаписывал вычисленный год, имя повторялось
         X = pd.DataFrame({"when": ["2020-01-01", "2021-02-01", "2022-03-01"], "when__year": [100, 200, 300]})
