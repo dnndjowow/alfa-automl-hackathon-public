@@ -479,7 +479,14 @@ class AddFeaturesTest(unittest.TestCase):
         self.assertEqual(applied[0]["name"], "te__area")
         self.assertEqual(list(test_out["te__area"].iloc[:2]), [4.5, 14.5])     # среднее по всему train
         self.assertTrue(pd.isna(test_out["te__area"].iloc[2]))                # новой сущности нет в train
-        self.assertEqual(list(test_out["te__area__n"]), [10, 10, 0])
+        self.assertEqual(list(test_out["te__area__n"]), [8, 8, 0])     # шкала train: 4 из 5 фолдов
+        # временная схема: строка видит только более ранние периоды, test — весь train
+        times = np.tile([1.0, 2.0], 10)
+        train, test_out, _, _ = agent_tools.build_features(X, test, [{"op": "target_mean", "by": "area"}], y_train=y,
+                                                           task_type="regression", te_scheme={"times": times})
+        self.assertTrue(train["te__area"][times == 1].isna().all())
+        self.assertEqual(train["te__area"].iloc[1], y[(X.area == 1) & (times == 1)].mean())
+        self.assertEqual(list(test_out["te__area"].iloc[:2]), [4.5, 14.5])
         self.assertFalse(np.allclose(train["te__area"], np.where(X.area == 1, 4.5, 14.5)))  # своя строка не входит
         unique = pd.DataFrame({"area": range(20)})
         _, _, applied, errors = agent_tools.build_features(unique, test, [{"op": "target_mean", "by": ["area"]}],
@@ -510,6 +517,18 @@ class AddFeaturesTest(unittest.TestCase):
             self.assertIn("area", json.dumps(json.loads(chat.seen[1][-1]["content"]).get("entity_key_hint")))
             self.assertTrue(reply["auto_entity_features"]["accepted"], reply["auto_entity_features"])
             self.assertIn("te__area", session.setup["split"].X_test.columns)
+
+    def test_entity_keys_add_columns_that_stay_constant_per_entity(self):
+        rng = np.random.default_rng(0)
+        buildings = pd.DataFrame({"area": rng.uniform(1000, 9000, 300).round(1),
+                                  "kind": rng.choice(list("ABCDEFG"), 300), "built": rng.integers(1900, 2020, 300)})
+        def years(n):
+            rows = buildings.sample(n, replace=True, random_state=n)
+            return rows.assign(temp=rng.normal(10, 5, n).round(1), rare=np.where(rng.random(n) < 0.99, 0, 1))
+        keys = agent_tools.entity_keys(years(2000).reset_index(drop=True), years(500).reset_index(drop=True))
+        self.assertEqual(keys[0], ["area"])
+        self.assertEqual(keys[-1][0], "area")
+        self.assertEqual(set(keys[-1][1:]), {"kind", "built"})   # погода и почти константный столбец — нет
 
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:

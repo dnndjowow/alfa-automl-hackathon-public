@@ -256,6 +256,10 @@ def auto_entity_features(session: agent_tools.Session) -> Optional[dict]:
     keys = agent_tools.entity_keys(split.X_train, split.X_test)
     if not keys:
         return None
+    best = session.best_run()
+    seconds = float(session.runs[best]["result"].get("seconds", 60.0)) if best else 60.0
+    if session.time_left() < 6 * seconds + 300:   # до двух полных оценок; не съедать время, о котором модель не просила
+        return None
     out = session.call("add_features", {"features": [{"op": "target_mean", "by": k} for k in keys],
                                         "hypothesis": "код: таргет той же сущности по entity_key_hint"})
     return {key: out.get(key) for key in ("accepted", "features", "base_oof", "new_oof", "note", "error")}

@@ -292,9 +292,11 @@ def _parse_feature(spec):
     return spec
 
 
-def _target_mean(keys_train: pd.Series, keys_test: pd.Series, y, regression=None, folds: int = 5) -> dict:
-    """Среднее таргета по ключу: для train — по остальным фолдам (своя строка не участвует), для test — по всему
-    train; плюс число строк с тем же ключом. Классы: доля каждого класса, кроме самого частого (не больше 10)."""
+def _target_mean(keys_train: pd.Series, keys_test: pd.Series, y, regression=None, scheme=None) -> dict:
+    """Среднее таргета по ключу без утечки; для test — по всему train. Схема как у валидации: при временной
+    строка train видит только более ранние периоды (как test видит весь train), иначе — другие фолды.
+    Плюс число таких строк. Классы: доля каждого, кроме самого частого (не больше 10)."""
+    scheme = scheme or {}
     if isinstance(y, pd.DataFrame):
         y = y.iloc[:, 0]
     y = pd.Series(np.asarray(y)).reset_index(drop=True)
@@ -305,25 +307,50 @@ def _target_mean(keys_train: pd.Series, keys_test: pd.Series, y, regression=None
         targets = {"": pd.to_numeric(y, errors="coerce").astype(float)}
     else:
         classes = y.value_counts().index[1:11]
-        targets = {f"__{_label_text(c)}": (y == c).astype(float) for c in classes}
-    order = np.random.default_rng(0).permutation(len(keys_train)) % folds
+        targets = {f"__c{i}": (y == c).astype(float) for i, c in enumerate(classes)}
     out = {}
+    times = scheme.get("times")
+    if times is not None:
+        t = np.asarray(times, dtype=float) * (-1.0 if scheme.get("backward") else 1.0)
+        frame = pd.DataFrame({"k": keys_train.values, "t": t})
+        known = ~np.isnan(t)
+        for suffix, values in list(targets.items()) + [("__n", pd.Series(np.ones(len(t))))]:
+            frame["v"] = values.values
+            agg = frame[known].groupby(["k", "t"])["v"].agg(["sum", "count"]).reset_index().sort_values(["k", "t"])
+            agg["past_sum"] = agg.groupby("k")["sum"].cumsum() - agg["sum"]
+            agg["past_n"] = agg.groupby("k")["count"].cumsum() - agg["count"]
+            past = frame[["k", "t"]].merge(agg, on=["k", "t"], how="left")
+            if suffix == "__n":
+                train_part = past["past_sum"].fillna(0).values
+                test_part = keys_test.map(keys_train.value_counts()).fillna(0).values
+            else:
+                train_part = (past["past_sum"] / past["past_n"].where(past["past_n"] > 0)).values
+                test_part = keys_test.map(values.groupby(keys_train.values).mean()).values
+            out[suffix] = (train_part, test_part)
+        return out
+    folds = scheme.get("folds")
+    if folds is None or len(folds) != len(keys_train) or (np.asarray(folds) < 0).any():
+        folds = np.random.default_rng(0).permutation(len(keys_train)) % 5
+    folds = np.asarray(folds)
+    numbers = np.unique(folds)
     for suffix, values in targets.items():
         oof = np.full(len(keys_train), np.nan)
-        for k in range(folds):
-            stat = values[order != k].groupby(keys_train[order != k].values).mean()
-            oof[order == k] = keys_train[order == k].map(stat).values
+        for k in numbers:
+            stat = values[folds != k].groupby(keys_train[folds != k].values).mean()
+            oof[folds == k] = keys_train[folds == k].map(stat).values
         out[suffix] = (oof, keys_test.map(values.groupby(keys_train.values).mean()).values)
-    count = keys_train.value_counts()
     oof_count = np.zeros(len(keys_train))
-    for k in range(folds):
-        part = keys_train[order != k].value_counts()
-        oof_count[order == k] = keys_train[order == k].map(part).fillna(0).values
-    out["__n"] = (oof_count, keys_test.map(count).fillna(0).values)
+    for k in numbers:
+        part = keys_train[folds != k].value_counts()
+        oof_count[folds == k] = keys_train[folds == k].map(part).fillna(0).values
+    # train видит (k−1)/k строк ключа, test — все: та же шкала счётчика
+    scale = (len(numbers) - 1) / max(len(numbers), 1)
+    out["__n"] = (oof_count, keys_test.map(keys_train.value_counts()).fillna(0).values * scale)
     return out
 
 
-def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list, y_train=None, task_type=None):
+def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list, y_train=None, task_type=None,
+                   te_scheme=None):
     """Посчитать признаки на train и test вместе (только по признакам; target_mean — по таргету train вне фолда).
     Возвращает (X_train, X_test, применённые [{name, spec}], ошибки)."""
     both = pd.concat([X_train, X_test], axis=0, ignore_index=True)
@@ -396,7 +423,7 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list, y_t
                 if name in both.columns or name in new:
                     continue
                 for suffix, (train_part, test_part) in _target_mean(keys.iloc[:n_train], keys.iloc[n_train:],
-                                                                   y_train, regression).items():
+                                                                   y_train, regression, te_scheme).items():
                     new[name + suffix] = pd.Series(np.concatenate([train_part, test_part]), dtype=float)
                 applied.append({"name": name, "spec": spec})
                 continue
@@ -420,6 +447,13 @@ def build_features(X_train: pd.DataFrame, X_test: pd.DataFrame, specs: list, y_t
 
 
 def entity_keys(X_train, X_test) -> list:
+    try:
+        return _entity_keys(X_train, X_test)
+    except Exception:   # необычные значения (списки из JSON и т.п.) не должны ронять set_task и fallback
+        return []
+
+
+def _entity_keys(X_train, X_test) -> list:
     """Столбцы-«отпечатки» сущности: много значений, и значения test в основном уже были в train (площадь здания,
     сумма договора). Погода нового года или непрерывные замеры в test новые и сюда не попадают."""
     n = len(X_train)
@@ -432,7 +466,33 @@ def entity_keys(X_train, X_test) -> list:
             if hit >= 0.6:
                 found.append((unique, col))
     cols = [c for _, c in sorted(found, reverse=True)]
-    return [cols[:1], cols[:2]] if len(cols) >= 2 else [cols] if cols else []
+    if not cols:
+        return []
+    keys = [cols[:1]] + ([cols[:2]] if len(cols) >= 2 else [])
+    static = _static_columns(X_train, cols[0])
+    if static:
+        keys.append(cols[:1] + static)   # здание = площадь + штат, тип, год постройки (не меняются по годам)
+    return keys
+
+
+def _static_columns(X_train, key, limit: int = 6) -> list:
+    """Столбцы, заметно чаще случайного постоянные у строк с одним значением ключа (атрибуты сущности).
+    Погода года или рейтинг, меняющийся от года к году, сюда не попадают."""
+    sample = X_train if len(X_train) <= 200_000 else X_train.sample(200_000, random_state=0)
+    sizes = sample.groupby(key, dropna=True)[key].transform("size")
+    repeated = sample[sizes >= 2]
+    if len(repeated) < 100:
+        return []
+    others = [c for c in sample.columns if c != key and 1 < sample[c].nunique() < 0.5 * len(sample)]
+    if not others:
+        return []
+    constant = repeated.groupby(key, dropna=True)[others].nunique(dropna=False).le(1)
+    weight = repeated.groupby(key, dropna=True).size()
+    share = constant.mul(weight, axis=0).sum() / weight.sum()
+    # почти константный столбец «постоянен» в любой группе: считаем прирост над долей самого частого значения
+    top = repeated[others].apply(lambda col: col.value_counts(normalize=True, dropna=False).iloc[0])
+    lift = (share - top) / (1 - top).clip(lower=1e-9)
+    return [c for c in lift.sort_values(ascending=False).index if lift[c] >= 0.3][:limit]
 
 
 ROW_ORDER = "__row_order__"
@@ -918,7 +978,8 @@ class Session:
         for target, split in current["splits"].items():
             X_train, X_test, applied, errors = build_features(split.X_train, split.X_test, features[:40],
                                                               y_train=split.y_train,
-                                                              task_type=self.setup["task_type"])
+                                                              task_type=self.setup["task_type"],
+                                                              te_scheme=self._te_scheme(target, split))
             new_splits[target] = replace(split, X_train=X_train, X_test=X_test)
         if not applied:
             return {"ok": False, "error": "ни один признак не построен", "errors": errors[:10],
@@ -958,6 +1019,17 @@ class Session:
                 "n_features": len(self.setup["split"].X_train.columns),
                 "note": "признаки приняты: дальнейшие evaluate/tune используют их" if accepted else
                         "признаки не дали устойчивого выигрыша: данные не изменены"}
+
+    def _te_scheme(self, target, split) -> dict:
+        """Как считать target_mean без утечки при текущей схеме валидации."""
+        plan = self.plan or {}
+        if plan.get("strategy") == "temporal" and plan.get("column") in split.X_train.columns:
+            try:
+                return {"times": ml_validation._time_values(split.X_train[plan["column"]]),
+                        "backward": plan.get("direction") == "backward"}
+            except Exception:
+                pass
+        return {"folds": self._fold_ids(target)}
 
     def tool_finish(self, reason=""):
         """Закончить исследование. Если ответ не записан, код сам обучит лучший запуск."""
