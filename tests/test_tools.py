@@ -340,3 +340,50 @@ class PublicToolsSmokeTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TwoStageTest(unittest.TestCase):
+    """Двухступенчатая схема «фон против остальных» при сдвиге train/test (ТЗ Ивана, 25.10)."""
+
+    @staticmethod
+    def make(n_train=1500, n_test=800, shift=3.0, bg_train=0.4, bg_test=0.55, seed=0):
+        from ml_data import SplitData
+        from ml_schema import Schema
+        rng = np.random.default_rng(seed)
+
+        def part(n, bg, offset):
+            y = np.where(rng.random(n) < bg, "N", rng.choice(["A", "B", "C"], n))
+            centers = {"N": 0.0, "A": 2.0, "B": -2.0, "C": 4.0}
+            X = pd.DataFrame({"x": [centers[v] for v in y] + rng.normal(0, 1.0, n),
+                              "z": rng.normal(0, 1, n), "s": rng.normal(offset, 1, n)})
+            return X, pd.Series(y)
+
+        Xtr, ytr = part(n_train, bg_train, 0.0)
+        Xte, yte = part(n_test, bg_test, shift)
+        split = SplitData(Xtr, ytr, Xte, pd.DataFrame(index=range(n_test)), Schema((), ("y",), ("x", "z", "s")))
+        return split, yte, {"task": {"type": "multiclass"}, "metric": {"primary": "f1_macro"}}
+
+    def test_applies_under_shift_with_a_background_class(self):
+        split, y_test, profile = self.make()
+        out = mt.fit_predict_two_stage(split, profile, models=("lightgbm",), n_jobs=2)
+        self.assertEqual(out["status"], "ok", out.get("error"))
+        self.assertTrue(out["applied"])
+        self.assertEqual(out["background"], "N")
+        self.assertGreater(out["auc"], mt.SHIFT_AUC)
+        self.assertEqual(len(out["pred"]), len(split.X_test))
+        self.assertTrue(set(out["pred"]) <= {"N", "A", "B", "C"})
+        share_pred = float(np.mean(out["pred"] == "N"))
+        self.assertAlmostEqual(share_pred, out["share_test"], delta=0.01)  # доля фона в прогнозе = оценке EM
+        self.assertGreater(out["share_test"], out["share_train"])            # EM видит, что фона в test больше
+
+    def test_skipped_without_shift_or_background(self):
+        split, _, profile = self.make(shift=0.0, bg_test=0.4)
+        out = mt.fit_predict_two_stage(split, profile, models=("lightgbm",), n_jobs=2)
+        self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+        self.assertIn("сдвига", out["reason"])
+        split, _, profile = self.make(bg_train=0.25)  # все четыре класса по ~25% < 30%: фона нет
+        out = mt.fit_predict_two_stage(split, profile, models=("lightgbm",), n_jobs=2)
+        self.assertEqual(out["status"], "skipped")
+        self.assertIn("фонового", out["reason"])
+        out = mt.fit_predict_two_stage(split, {"task": {"type": "regression"}, "metric": {"primary": "rmse"}}, n_jobs=2)
+        self.assertEqual(out["status"], "skipped")
