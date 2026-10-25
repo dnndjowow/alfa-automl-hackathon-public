@@ -192,6 +192,32 @@ class BehaviourTest(unittest.TestCase):
                     logged = m.model_.get_evals_result()["validation"]
                 self.assertIn(expected[name], logged)
 
+    def test_catboost_predicts_with_its_best_iteration(self):
+        # код-ревью 25.10 (F05): при постоянном таргете валидации CatBoost сам выключал use_best_model —
+        # сообщал best_iteration_=1, а предсказывал всеми 30 деревьями (RMSE 2.84 против 0.29)
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame(rng.normal(size=(4000, 8)), columns=[f"f{i}" for i in range(8)])
+        y = 3 * X["f0"] + rng.normal(0, 0.1, 4000)
+        Xv = pd.DataFrame(rng.normal(size=(1000, 8)), columns=X.columns)
+        m = model("catboost", "regression", max_rounds=30, learning_rate=0.1, early_stopping_rounds=1000)
+        m.fit(X, y, Xv, np.zeros(1000))
+        self.assertEqual(m.model_.tree_count_, m.best_iteration_)
+
+    def test_catboost_f1_stopping_ignores_class_weights(self):
+        # код-ревью 25.10 (F17): с class_weight CatBoost взвешивал и TotalF1, а метрика задачи невзвешенная
+        rng = np.random.default_rng(10)
+        X = pd.DataFrame(rng.normal(size=(1200, 5)), columns=[f"f{i}" for i in range(5)])
+        y = ((X["f0"] + 0.8 * rng.normal(size=1200)) > 1.4).astype(int).to_numpy()
+        runs = {}
+        for name, params in (("ours", {"class_weight": "balanced"}),
+                             ("explicit", {"class_weight": "balanced", "eval_metric": "TotalF1:average=Macro;use_weights=false"})):
+            m = model("catboost", "classification", n_classes=2, params=params, max_rounds=100, learning_rate=0.1,
+                      early_stopping_rounds=1000, eval_metric="f1_macro", custom_eval=True)
+            m.fit(X.iloc[:800], y[:800], X.iloc[800:], y[800:])
+            runs[name] = m
+        self.assertIn("use_weights=false", runs["ours"].model_.get_params()["eval_metric"])
+        self.assertEqual(runs["ours"].best_iteration_, runs["explicit"].best_iteration_)
+
     def test_round_and_dart_aliases_are_removed(self):
         # код-ревью 25.10 (F15, F16): nrounds молча урезал модель до 5 деревьев, boost='dart' проходил
         X, y = make_data("regression")

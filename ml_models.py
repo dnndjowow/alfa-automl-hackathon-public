@@ -344,8 +344,17 @@ class BoostingModel:
         )
         if Xv is not None:
             params["early_stopping_rounds"] = self.early_stopping_rounds
+            # явно: CatBoost сам выключает use_best_model, например при постоянном таргете валидации, и тогда
+            # предсказывал всеми деревьями, а сообщал лучшую итерацию (RMSE 2.84 против 0.29 у лучшего префикса)
+            params["use_best_model"] = True
             if self._stop_native:
-                params["eval_metric"] = self._stop_native
+                native = self._stop_native
+                weighted = any(k in self.params for k in ("auto_class_weights", "class_weights", "scale_pos_weight"))
+                if weighted and native.startswith(("TotalF1", "Accuracy")):
+                    # метрика задачи невзвешенная, а при весах классов CatBoost по умолчанию взвешивает и её;
+                    # без весов параметр use_weights CatBoost не принимает
+                    native += (";" if ":" in native else ":") + "use_weights=false"
+                params["eval_metric"] = native
         params.update(self.params)
         cls = CatBoostRegressor if self.task == "regression" else CatBoostClassifier
         self.model_ = cls(**params)
