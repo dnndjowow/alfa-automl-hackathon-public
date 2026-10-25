@@ -189,7 +189,10 @@ def resolve_schema(suggestion: dict, id_cols=None, target_cols=None) -> Schema:
     unknown = [c for c in targets + ids if c not in known]
     if unknown:
         raise SchemaError(f"столбцов {unknown} нет в данных задачи")
-    features = tuple(c for c in pool if c not in ids and c not in targets)
+    # без переопределения берём признаки подсказки: в схеме, заданной вызывающим (confidence given),
+    # их выбор отличается от всех общих столбцов, и прежде он терялся при повторном resolve
+    chosen = suggestion.get("feature_cols") if not overridden and suggestion.get("feature_cols") is not None else pool
+    features = tuple(c for c in chosen if c not in ids and c not in targets)
     output = suggestion.get("output_columns")
     return Schema(tuple(ids), tuple(targets), features, tuple(output) if output else None)
 
