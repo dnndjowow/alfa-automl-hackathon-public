@@ -117,6 +117,13 @@ def improve(session) -> None:
     if len(y) >= 5000:   # глубокие деревья узнают повторяющиеся сущности: public-регрессия RMSE 39.3 -> 35.8
         steps.append({"model": "xgboost", "params": {"max_depth": 11, "min_child_weight": 1.0},
                       "hypothesis": "fallback: глубокие деревья"})
+    # разнородные конфигурации из портфеля AutoGluon (TabRepo): смесь берёт полезные и игнорирует слабые
+    steps += [{"model": "lightgbm", "params": {"extra_trees": True}, "hypothesis": "fallback: портфель, extra_trees"},
+              {"model": "lightgbm", "params": {"num_leaves": 128, "colsample_bytree": 0.9, "min_child_samples": 3},
+               "learning_rate": 0.03, "hypothesis": "fallback: портфель, крупные листья"},
+              {"model": "catboost", "params": {"depth": 6, "l2_leaf_reg": 2.15, "max_ctr_complexity": 4,
+                                               "one_hot_max_size": 10},
+               "learning_rate": 0.069, "hypothesis": "fallback: портфель, catboost"}]
     last = 0.0
     auto_features = True
     for step in steps:
@@ -145,15 +152,31 @@ def improve(session) -> None:
     else:
         best_single = best
     if best_single:
-        config = session.runs[best_single]["config"]
-        reserve = session.estimate_final_seconds(best or best_single, 3) + 120
-        budget = 0.6 * (session.time_left() - reserve)
-        if budget > 120 and os.environ.get("AGENT_FALLBACK_TUNE", "on").lower() != "off":
-            result = session.call("tune", {"model": config["model"], "n_trials": 40, "time_budget_s": budget,
-                                           "target_transform": config["target_transform"], "hypothesis": "fallback"})
-            log(f"[fallback] tune {config['model']}: ok={result.get('ok')} trials={result.get('trials')} "
-                f"best={result.get('best', {}).get('score')}")
-            blend(session)
+        tune_more(session)
+
+
+def tune_more(session, skip=()) -> None:
+    """tune лучшей модели, затем остальных семейств по убыванию качества — пока есть время; смесь после каждого."""
+    if os.environ.get("AGENT_FALLBACK_TUNE", "on").lower() == "off" or not session._ok_runs(full_only=True):
+        return
+    best_single = session.best_run()
+    singles = [r for r in session._ok_runs(full_only=True) if session.runs[r]["config"]["model"] != "blend"]
+    order = []
+    for run_id in sorted(singles, key=lambda r: _rank(session, r)):
+        config = session.runs[run_id]["config"]
+        if config["model"] not in [c["model"] for c in order] and config["model"] not in skip:
+            order.append(config)
+    for number, config in enumerate(order):
+        best = session.best_run() or best_single
+        reserve = session.estimate_final_seconds(best, 3) + 120
+        budget = (0.6 if number == 0 else 0.5) * (session.time_left() - reserve)
+        if budget < 120:
+            break
+        result = session.call("tune", {"model": config["model"], "n_trials": 40, "time_budget_s": budget,
+                                       "target_transform": config["target_transform"], "hypothesis": "fallback"})
+        log(f"[fallback] tune {config['model']}: ok={result.get('ok')} trials={result.get('trials')} "
+            f"best={result.get('best', {}).get('score')}")
+        blend(session)
 
 
 def add_safe_features(session, base_seconds) -> None:
@@ -326,6 +349,11 @@ def main(argv) -> int:
     if session.setup is None or not session._ok_runs(full_only=True):
         log("[agent] обученной модели нет: запасная политика")
         guarded(fallback_policy, session)
+    elif session.time_left() > 600:
+        # модель закончила раньше времени: дотюнить семейства, которые она не тюнила, и пересобрать смесь
+        tuned = {(e.get("args") or {}).get("model", "lightgbm") for e in session.history if e.get("tool") == "tune"}
+        log(f"[agent] осталось {session.time_left():.0f}s: tune_more без {sorted(m for m in tuned if m)}")
+        guarded(tune_more, session, tuned)
     guarded(ensure_final, session)
     guarded(stabilize, session)
     guarded(polish, session)
