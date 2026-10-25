@@ -7,7 +7,7 @@ import numpy as np
 import pandas as pd
 
 import ml_metrics
-from ml_models import BoostingModel, ModelError, default_n_jobs
+from ml_models import BoostingModel, ModelError, default_n_jobs, prepare_params
 
 N_JOBS = 2
 
@@ -191,6 +191,16 @@ class BehaviourTest(unittest.TestCase):
                 else:
                     logged = m.model_.get_evals_result()["validation"]
                 self.assertIn(expected[name], logged)
+
+    def test_round_and_dart_aliases_are_removed(self):
+        # код-ревью 25.10 (F15, F16): nrounds молча урезал модель до 5 деревьев, boost='dart' проходил
+        X, y = make_data("regression")
+        m = model("lightgbm", "regression", params={"nrounds": 5}).fit(X, y, n_rounds=30)
+        self.assertEqual(m.best_iteration_, 30)
+        self.assertTrue(m.param_notes_)
+        clean, notes = prepare_params("lightgbm", "regression", {"boost": "dart", "num_leaves": 15})
+        self.assertEqual(clean, {"num_leaves": 15})
+        self.assertTrue(notes)
 
     def test_custom_stopping_is_off_by_default(self):
         X, y = make_data("classification", k=3, n=400)
