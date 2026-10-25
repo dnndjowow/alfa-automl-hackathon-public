@@ -208,9 +208,22 @@ class TabularPreprocessor:
                 self.categories_[col] = [k for k, _ in order]
                 self.categorical_cols_.append(col)
         self.input_cols_ = [c for c in X.columns if c not in self.dropped_]
+        # имена частей даты не должны совпадать с уже существующими столбцами (when__year в данных):
+        # иначе вычисленный год перезаписывался исходным столбцом, а LightGBM падал на повторе имени
+        taken = {str(c) for c in self.input_cols_ if c not in self.datetime_cols_}
+        self.date_names_ = {}
+        for c in self.datetime_cols_:
+            names = {}
+            for part in DATE_PARTS:
+                name = f"{c}__{part}"
+                while name in taken:
+                    name += "_"
+                taken.add(name)
+                names[part] = name
+            self.date_names_[c] = names
         self.feature_names_ = [
             name for c in self.input_cols_
-            for name in ([f"{c}__{part}" for part in DATE_PARTS] if c in self.datetime_cols_ else [c])
+            for name in (list(self.date_names_[c].values()) if c in self.datetime_cols_ else [c])
         ]
         if not self.feature_names_:
             raise DataError("после удаления пустых и константных столбцов признаков не осталось")
@@ -234,10 +247,11 @@ class TabularPreprocessor:
                 values = X[col]
             if col in self.datetime_cols_:
                 parsed = to_dates(values, self.dayfirst_.get(col, False))
-                out[f"{col}__days"] = date_days(parsed).astype("float64")
-                out[f"{col}__year"] = parsed.dt.year.astype("float64")
-                out[f"{col}__month"] = parsed.dt.month.astype("float64")
-                out[f"{col}__dayofweek"] = parsed.dt.dayofweek.astype("float64")
+                names = self.date_names_[col]
+                out[names["days"]] = date_days(parsed).astype("float64")
+                out[names["year"]] = parsed.dt.year.astype("float64")
+                out[names["month"]] = parsed.dt.month.astype("float64")
+                out[names["dayofweek"]] = parsed.dt.dayofweek.astype("float64")
             elif col in self.categorical_cols_:
                 present = values.notna()
                 text = category_text(values)

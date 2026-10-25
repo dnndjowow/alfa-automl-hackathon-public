@@ -153,6 +153,15 @@ class PreprocessorTransformTest(unittest.TestCase):
         plain = parse_dates(pd.Series(["2020-01-01", "2020-06-01"]))
         self.assertEqual(list(plain.dt.month), [1, 6])  # даты без смещения не сдвигаются
 
+    def test_date_part_names_do_not_collide_with_columns(self):
+        # код-ревью 25.10 (F09): существующий when__year перезаписывал вычисленный год, имя повторялось
+        X = pd.DataFrame({"when": ["2020-01-01", "2021-02-01", "2022-03-01"], "when__year": [100, 200, 300]})
+        pre = TabularPreprocessor().fit(X)
+        out = pre.transform(X)
+        self.assertEqual(len(out.columns), len(set(out.columns)))
+        self.assertEqual(list(out["when__year"]), [100.0, 200.0, 300.0])     # исходный столбец цел
+        self.assertEqual(list(out["when__year_"]), [2020.0, 2021.0, 2022.0])  # вычисленный год под своим именем
+
     def test_test_dates_are_read_like_train(self):
         # в test могут быть только неоднозначные даты: порядок дня и месяца берётся из train
         train = pd.DataFrame({"when": ["13/01/2020", "25/02/2020", "03/03/2020"], "x": [1, 2, 3]})
