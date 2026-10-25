@@ -168,6 +168,22 @@ class SplitsTest(unittest.TestCase):
             self.assertEqual(len(set(keys.iloc[train]) & set(keys.iloc[valid])), 0)
         self.assertLess(elapsed, 5.0)  # на M2 ~1 с, на i5-11400F ~2.1 с; прежняя версия была в 8 раз медленнее
 
+    def test_group_split_survives_rare_classes_among_copies(self):
+        # код-ревью 25.10 (F04): SGKF на подмножестве строк-копий падал ValueError, когда все классы
+        # среди копий реже числа частей (регрессия 5271515)
+        X = pd.DataFrame({"a": np.r_[np.arange(100), np.repeat(np.arange(1000, 1006), 2)].astype(float)})
+        y = np.r_[np.repeat([0, 1], 50), np.repeat([2, 3, 4], 4)]
+        splits = mv.make_splits({"strategy": "group", "n_splits": 5, "classification": True}, X, y)
+        self.assertEqual(len(splits), 5)
+        self.assertEqual(len(self.check_partition(splits, len(X))), len(X))
+        keys = pd.Series(mv.row_groups(X))
+        for train, valid in splits:
+            self.assertEqual(len(set(keys.iloc[train]) & set(keys.iloc[valid])), 0)
+        # копий совсем мало: даже объединённая страта меньше числа частей — группы по кругу, без падения
+        X2 = pd.DataFrame({"a": np.r_[np.arange(60), [1000, 1000, 1001, 1001, 1002, 1002, 1003, 1003, 1004, 1004]].astype(float)})
+        y2 = np.r_[np.repeat([0, 1], 30), [2, 2, 3, 3, 2, 2, 3, 3, 2, 2]]
+        self.assertEqual(len(mv.make_splits({"strategy": "group", "n_splits": 5, "classification": True}, X2, y2)), 5)
+
     def test_group_folds_do_not_change_when_features_are_added(self):
         # ревью Ивана (25.10, row_groups): номер группы был хэшем строки, и после добавления признаков
         # фолды перемешивались, хотя группы прежние; сравнение наборов признаков шло на разных фолдах

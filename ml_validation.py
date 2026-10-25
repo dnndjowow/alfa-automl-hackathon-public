@@ -189,8 +189,16 @@ def _group_stratified(y: np.ndarray, groups: np.ndarray, n_splits: int, seed: in
             valid[i % n_splits].append(np.array([idx]))
     if len(multi):
         multi_groups = groups[multi]
+        folds = None
         if len(np.unique(multi_groups)) >= n_splits:
-            folds = StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed).split(multi, y[multi], multi_groups)
+            # редкие среди копий классы объединяются, как и для строк без копий: глобально частых классов
+            # в этом подмножестве может не быть, и SGKF падал «n_splits больше числа членов каждого класса»
+            strata, _ = _strata(y[multi], n_splits)
+            try:
+                folds = list(StratifiedGroupKFold(n_splits, shuffle=True, random_state=seed).split(multi, strata, multi_groups))
+            except ValueError:
+                folds = None  # даже объединённых мало: группы по кругу, как при малом числе групп
+        if folds is not None:
             for i, (_, va) in enumerate(folds):
                 valid[i].append(multi[va])
         else:
