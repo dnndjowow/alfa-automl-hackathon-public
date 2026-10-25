@@ -137,6 +137,11 @@ def improve(session) -> None:
                 break
         if session._ok_runs(full_only=True) and step is steps[0]:
             continue  # база уже есть (её сделала LLM)
+        if step["hypothesis"].endswith("портфель, catboost") and any(
+                session.runs[r]["config"]["model"] == "catboost" and session.runs[r]["result"].get("seconds", 0) > 600
+                for r in session._ok_runs(full_only=True)):
+            log("[fallback] второй CatBoost пропущен: первый шёл дольше 10 минут")
+            continue
         started = time.monotonic()
         result = session.call("evaluate", step)
         last = time.monotonic() - started

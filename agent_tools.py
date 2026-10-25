@@ -326,6 +326,14 @@ def _target_mean(keys_train: pd.Series, keys_test: pd.Series, y, regression=None
             else:
                 train_part = (past["past_sum"] / past["past_n"].where(past["past_n"] > 0)).values
                 test_part = keys_test.map(values.groupby(keys_train.values).mean()).values
+            # блоки дат: строка проверочной части видит только train своей части, а не ранние строки своего блока
+            # (ревью Юры, п. 1); при одном значении времени на часть результат тот же
+            for train, valid in scheme.get("splits") or []:
+                stat = values.iloc[train].groupby(keys_train.iloc[train].values)
+                stat = stat.size() if suffix == "__n" else stat.mean()
+                mapped = keys_train.iloc[valid].map(stat)
+                train_part = np.asarray(train_part, dtype=float).copy()
+                train_part[valid] = (mapped.fillna(0) if suffix == "__n" else mapped).values
             out[suffix] = (train_part, test_part)
         return out
     folds = scheme.get("folds")
@@ -1026,7 +1034,8 @@ class Session:
         if plan.get("strategy") == "temporal" and plan.get("column") in split.X_train.columns:
             try:
                 return {"times": ml_validation._time_values(split.X_train[plan["column"]]),
-                        "backward": plan.get("direction") == "backward"}
+                        "backward": plan.get("direction") == "backward",
+                        "splits": list(ml_validation.make_splits(plan, split.X_train, None, seed=self.seed))}
             except Exception:
                 pass
         if plan.get("strategy") == "group":

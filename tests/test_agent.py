@@ -530,6 +530,21 @@ class AddFeaturesTest(unittest.TestCase):
         self.assertEqual(keys[-1][0], "area")
         self.assertEqual(set(keys[-1][1:]), {"kind", "built"})   # погода и почти константный столбец — нет
 
+    def test_target_mean_on_date_blocks_ignores_targets_of_the_same_block(self):
+        import ml_validation
+        rng = np.random.default_rng(0)
+        X = pd.DataFrame({"t": rng.uniform(0, 1000, 2000), "ent": rng.integers(0, 40, 2000)})
+        y = pd.Series(X.ent + X.t / 100 + rng.normal(0, 1, 2000))
+        plan = {"strategy": "temporal", "column": "t", "direction": "forward", "n_splits": 3}
+        splits = list(ml_validation.make_splits(plan, X, None))
+        scheme = {"times": ml_validation._time_values(X.t), "splits": splits}
+        keys, before = X.ent.astype(str), agent_tools._target_mean(X.ent.astype(str), pd.Series(["1"]), y, True, scheme)
+        for _, valid in splits:   # ревью Юры, п. 1: таргеты своего проверочного блока не видны
+            changed = y.copy()
+            changed.iloc[valid] = rng.normal(0, 100, len(valid))
+            after = agent_tools._target_mean(keys, pd.Series(["1"]), changed, True, scheme)
+            np.testing.assert_allclose(before[""][0][valid], after[""][0][valid])
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)
