@@ -102,6 +102,16 @@ def infer_schema(train, test=None, sample_submission=None, dictionary=None) -> d
             if c in test.columns and roles.get(c) != "target" and test[c].is_unique
             and set(sample_submission[c].astype(str)) == set(test[c].astype(str))
         ]
+        if not id_cols:
+            # составной ключ (клиент + месяц): каждый столбец по отдельности не уникален, а вместе — уникальны
+            parts = [
+                c for c in sample_submission.columns
+                if c in test.columns and roles.get(c) != "target"
+                and set(sample_submission[c].astype(str)) == set(test[c].astype(str))
+            ]
+            if len(parts) >= 2 and not test[parts].duplicated().any():
+                id_cols = parts
+                notes.append(f"id — составной ключ {parts}: по отдельности столбцы не уникальны")
         if id_cols:
             sources["id"] = "значения sample_submission совпадают с test"
             if not all(np.array_equal(sample_submission[c].to_numpy(), test[c].to_numpy()) for c in id_cols):

@@ -56,6 +56,19 @@ class SyntheticSchemaTest(unittest.TestCase):
         with self.assertRaises(ms.SchemaError):
             ms.resolve_schema(suggestion, target_cols=["no_such_column"])
 
+    def test_composite_id_is_found(self):
+        # код-ревью 25.10 (F11): пара account+period уникальна, по отдельности нет — id не находился
+        train = pd.DataFrame({"account": [1, 1, 2, 2], "period": [1, 2, 1, 2], "x": [1, 2, 3, 4], "y": [0, 1, 0, 1]})
+        test = pd.DataFrame({"account": [3, 3, 4, 4], "period": [1, 2, 1, 2], "x": [5, 6, 7, 8]})
+        sample = pd.DataFrame({"account": [3, 3, 4, 4], "period": [1, 2, 1, 2], "y": 0})
+        s = ms.infer_schema(train, test, sample)
+        self.assertEqual((s["id_cols"], s["target_cols"]), (["account", "period"], ["y"]))
+        self.assertNotEqual(s["confidence"], "low")
+        self.assertEqual(ms.resolve_schema(s).feature_cols, ("x",))
+        # повторы пары — это не ключ
+        dup = test.assign(period=[1, 1, 2, 2])
+        self.assertEqual(ms.infer_schema(train, dup, sample.assign(period=[1, 1, 2, 2]))["id_cols"], [])
+
     def test_no_target_found(self):
         data = self.load(kind="regression")
         suggestion = ms.infer_schema(data.test, data.test)
