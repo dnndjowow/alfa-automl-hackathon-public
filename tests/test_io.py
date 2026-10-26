@@ -281,6 +281,73 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
             ml_io.read_task_text("/nonexistent/task.md")
 
 
+class TargetRolesLoadingTest(unittest.TestCase):
+    """Ревью 26.10: R2 — класс «NA» в таргете с test-заглушкой, R4 — метки с ведущими нулями."""
+
+    def write(self, train, test, sample, dictionary, text="Классификация. Основная метрика Macro F1."):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        p = Path(tmp.name)
+        (p / "task.md").write_text(text + " `train.csv` `test.csv` `sample_submission.csv` `data_dictionary.csv`",
+                                   encoding="utf-8")
+        train.to_csv(p / "train.csv", index=False)
+        test.to_csv(p / "test.csv", index=False)
+        sample.to_csv(p / "sample_submission.csv", index=False)
+        dictionary.to_csv(p / "data_dictionary.csv", index=False)
+        return p / "task.md"
+
+    def label_case(self, n_test, mixed=False, dictionary_role="target"):
+        import ml_data
+        import ml_schema
+        labels = ["1", "2"] * 50 + ["NA"] * 30
+        train = pd.DataFrame({"id": range(130), "x": [i * 0.1 for i in range(130)], "target": labels})
+        test = pd.DataFrame({"id": range(500, 500 + n_test), "x": [i * 0.1 for i in range(n_test)],
+                             "target": [0 if not mixed or i % 2 == 0 else None for i in range(n_test)]})
+        sample = pd.DataFrame({"id": range(500, 500 + n_test), "target": "1"})
+        dictionary = pd.DataFrame({"feature": ["id", "x", "target"], "role": ["id", "feature", dictionary_role]})
+        data = ml_io.load_task(self.write(train, test, sample, dictionary))
+        suggestion = ml_schema.infer_schema(data.train, data.test, data.sample_submission, data.data_dictionary)
+        return ml_data.split_task(data, ml_schema.resolve_schema(suggestion, id_cols=["id"], target_cols=["target"]))
+
+    def test_na_class_kept_with_any_placeholder(self):
+        for n_test, mixed in ((20, False), (2, False), (20, True), (2, True)):
+            with self.subTest(n_test=n_test, mixed=mixed):
+                split = self.label_case(n_test, mixed)
+                self.assertEqual(len(split.y_train), 130)
+                self.assertEqual(sorted(map(str, split.y_train.unique())), ["1", "2", "NA"])
+
+    def test_na_class_kept_by_sample_without_dictionary_target(self):
+        split = self.label_case(2, mixed=False, dictionary_role="feature")
+        self.assertEqual(len(split.y_train), 130)
+
+    def test_leading_zero_labels_stay_distinct(self):
+        labels = ["01", "1", "02"] * 30
+        train = pd.DataFrame({"id": range(90), "x": [i * 0.1 for i in range(90)], "y": labels})
+        test = pd.DataFrame({"id": [100, 101], "x": [0.1, 0.2]})
+        sample = pd.DataFrame({"id": [100, 101], "y": ["01", "01"]})
+        dictionary = pd.DataFrame({"feature": ["id", "x", "y"], "role": ["id", "feature", "target"]})
+        data = ml_io.load_task(self.write(train, test, sample, dictionary))
+        self.assertEqual(sorted(data.train["y"].unique()), ["01", "02", "1"])
+
+    def test_plain_integer_labels_stay_numeric(self):
+        train = pd.DataFrame({"id": range(90), "x": [i * 0.1 for i in range(90)], "y": [0, 1, 2] * 30})
+        test = pd.DataFrame({"id": [100, 101], "x": [0.1, 0.2]})
+        sample = pd.DataFrame({"id": [100, 101], "y": [0, 0]})
+        dictionary = pd.DataFrame({"feature": ["id", "x", "y"], "role": ["id", "feature", "target"]})
+        data = ml_io.load_task(self.write(train, test, sample, dictionary))
+        self.assertTrue(pd.api.types.is_integer_dtype(data.train["y"]))
+        self.assertEqual(data.files.warnings, [])
+
+    def test_regression_placeholder_target_still_numeric(self):
+        train = pd.DataFrame({"id": range(40), "x": range(40), "y": [str(i) for i in range(38)] + ["NA", "NA"]})
+        test = pd.DataFrame({"id": [100, 101], "x": [1, 2], "y": [0, 0]})
+        sample = pd.DataFrame({"id": [100, 101], "y": [0.0, 0.0]})
+        dictionary = pd.DataFrame({"feature": ["id", "x", "y"], "role": ["id", "feature", "target"]})
+        data = ml_io.load_task(self.write(train, test, sample, dictionary, text="Регрессия. Метрика RMSE."))
+        self.assertTrue(pd.api.types.is_numeric_dtype(data.train["y"]))
+        self.assertEqual(int(data.train["y"].isna().sum()), 2)
+
+
 @unittest.skipUnless(DATA.exists(), "публичные данные не скачаны в data/public")
 class PublicTasksLoadingTest(unittest.TestCase):
     def test_regression(self):

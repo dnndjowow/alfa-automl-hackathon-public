@@ -261,6 +261,26 @@ class MetricMentionTest(unittest.TestCase):
         self.assertEqual(found["mentioned"], [])
 
 
+class ExplicitTargetOverrideTest(unittest.TestCase):
+    """Ревью 26.10, R5: явный выбор цели, которая есть только в train, не отклоняется как неизвестный столбец."""
+
+    def suggestion(self):
+        train = pd.DataFrame({"id": [1, 2, 3, 4], "x": [.1, .2, .3, .4], "score": [0.] * 4, "actual": [0, 1, 0, 1]})
+        test = pd.DataFrame({"id": [10, 11], "x": [.2, .4]})
+        sample = pd.DataFrame({"id": [10, 11], "score": [0., 0.]})
+        dictionary = pd.DataFrame({"feature": ["id", "score", "actual"], "role": ["id", "feature", "target"]})
+        return ms.infer_schema(train, test, sample, dictionary)
+
+    def test_train_only_target_accepted(self):
+        schema = ms.resolve_schema(self.suggestion(), id_cols=["id"], target_cols=["actual"])
+        self.assertEqual(schema.target_cols, ("actual",))
+        self.assertNotIn("actual", schema.feature_cols)
+
+    def test_absent_column_still_rejected(self):
+        with self.assertRaises(ms.SchemaError):
+            ms.resolve_schema(self.suggestion(), id_cols=["id"], target_cols=["nope"])
+
+
 @unittest.skipUnless(DATA.exists(), "публичные данные не скачаны в data/public")
 class PublicSchemaTest(unittest.TestCase):
     def test_regression(self):
