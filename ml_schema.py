@@ -161,6 +161,7 @@ def infer_schema(train, test=None, sample_submission=None, dictionary=None) -> d
         "id_cols": id_cols,
         "target_cols": targets,
         "shared_columns": shared,
+        "train_columns": list(train_cols),
         "feature_cols": [c for c in shared if c not in id_cols and c not in targets],
         "output_columns": list(sample_submission.columns) if sample_submission is not None else None,
         "confidence": confidence,
@@ -185,7 +186,10 @@ def resolve_schema(suggestion: dict, id_cols=None, target_cols=None) -> Schema:
     if overlap:
         raise SchemaError(f"столбцы {overlap} не могут быть одновременно id и таргетом")
     pool = suggestion["shared_columns"]
-    known = set(pool) | set(suggestion["target_cols"]) | set(suggestion["id_cols"])
+    # явный выбор проверяется по всем столбцам train: цель только в train (её назвал словарь, а подсказка выбрала
+    # другой источник) — законный выбор, а не «неизвестный столбец» (ревью 26.10, R5)
+    known = (set(pool) | set(suggestion["target_cols"]) | set(suggestion["id_cols"])
+             | set(suggestion.get("train_columns") or ()))
     unknown = [c for c in targets + ids if c not in known]
     if unknown:
         raise SchemaError(f"столбцов {unknown} нет в данных задачи")

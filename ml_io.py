@@ -275,6 +275,59 @@ def _coerce(frame: pd.DataFrame, columns) -> pd.DataFrame:
     return frame
 
 
+def _declared_targets(data: "TaskData") -> list:
+    """Таргеты, которые есть и в test (заглушка), по словарю, sample_submission или постоянству в test.
+
+    Столбец таргета в test бывает заглушкой (все 0, пусто, 0 вперемешку с пустыми). Тогда разница train/test его
+    не находит, и без этой проверки «NA»-класс в нём переводится в пропуск (ревью 26.10, R2). Признаки: словарь
+    называет столбец target; или он есть в sample_submission и в test не несёт информации (не больше одного
+    непустого значения); или test не меньше 10 строк, столбец в нём постоянен, а в train — нет (F02 Ивана)."""
+    if data.test is None:
+        return []
+    import ml_schema  # здесь, а не наверху: ml_schema — уровень выше чтения файлов
+    roles = ml_schema._dictionary_roles(data.data_dictionary)
+    train, test = data.train, data.test
+    shared = [c for c in train.columns if c in test.columns]
+    sample = set(data.sample_submission.columns) if data.sample_submission is not None else set()
+    found = []
+    for c in shared:
+        if roles.get(c) == "id" or train[c].nunique(dropna=False) <= 1:
+            continue
+        empty = test[c].nunique(dropna=True) <= 1
+        if (roles.get(c) == "target" or (c in sample and empty)
+                or (len(test) >= 10 and test[c].nunique(dropna=False) <= 1)):
+            found.append(c)
+    return found
+
+
+def _keep_distinct_labels(data: "TaskData", columns) -> None:
+    """Перечитать таргет классификации текстом, если числа сливают разные метки («01» и «1» -> 1, ревью R4).
+
+    Обычные метки «0», «1», «2» остаются числами, как прежде: текст нужен, только когда числовое чтение
+    теряет различия классов."""
+    numeric = [c for c in columns if c in data.train.columns and pd.api.types.is_numeric_dtype(data.train[c])]
+    if not numeric:
+        return
+    path = data.files.paths.get("train")
+    if path is None:
+        return
+    raw = read_csv(path, text_columns=numeric)
+    if len(raw) != len(data.train):
+        return
+    merged = []
+    for c in numeric:
+        if c not in raw.columns:
+            continue
+        text = raw[c].dropna().astype(str).str.strip()
+        pairs = pd.DataFrame({"text": text, "num": pd.to_numeric(text, errors="coerce")}).drop_duplicates()
+        if pairs["num"].duplicated().any():
+            merged.append(c)
+    for c in merged:
+        data.train[c] = raw[c].to_numpy()
+    if merged:
+        data.files.warnings.append(f"таргет {merged} прочитан текстом: числа сливали разные метки (например, «01» и «1»)")
+
+
 def load_task(task_md) -> TaskData:
     """Найти и прочитать все распознанные файлы задачи. Отсутствующие роли остаются None.
 
@@ -299,8 +352,12 @@ def load_task(task_md) -> TaskData:
     # совсем («NA» — законный класс: пропуск по условию — пустая ячейка), в регрессии переводим только
     # столбцы из чисел и меток пропуска (Y1: «NA» в числовом таргете ломал регрессию)
     target_like = [c for c in data.train.columns if data.test is None or c not in data.test.columns]
+    target_like += [c for c in _declared_targets(data) if c not in target_like]
+    classification = _classification_task(data.text)
+    if classification:
+        _keep_distinct_labels(data, target_like)
     numeric = numeric_text_columns(data.train, strict=target_like)
-    if _classification_task(data.text):
+    if classification:
         numeric = [c for c in numeric if c not in target_like]
     if data.test is not None:
         numeric += [c for c in data.test.columns
