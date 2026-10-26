@@ -318,30 +318,62 @@ SHIFT_AUC = 0.8          # adversarial AUC train/test, выше которого
 BACKGROUND_SHARE = 0.3   # самый частый класс с такой долей train считается «фоном» (Normal среди атак)
 
 
+def _time_left(deadline, phase: str):
+    """Остаток общего бюджета; проверки кооперативные, между операциями и итерациями модели."""
+    if deadline is None:
+        return None
+    left = deadline - time.monotonic()
+    if left <= 0:
+        raise TimeoutError(f"бюджет времени исчерпан: {phase}")
+    return left
+
+
 def shift_check(X_train: pd.DataFrame, X_test: pd.DataFrame, seed: int = 0, n_jobs: Optional[int] = None,
-                max_rows: int = 100_000) -> dict:
+                max_rows: int = 100_000, time_budget: Optional[float] = None) -> dict:
     """Насколько test отличается от train: AUC LightGBM, отличающего строку test от строки train (3 части, вне фолда).
-    {'auc', 'shifted'}: около 0.5 — разбиение случайное; выше SHIFT_AUC — сильный сдвиг."""
-    import lightgbm as lgb
-    from sklearn.metrics import roc_auc_score
-    from sklearn.model_selection import StratifiedKFold
+    Успех: status='ok', complete=True, auc/shifted. Около 0.5 — случайное разбиение; выше SHIFT_AUC — сильный сдвиг.
+    При исчерпании time_budget: skipped, complete=False, auc=None; частичная проверка не считается оценкой сдвига."""
+    started = time.monotonic()
+    deadline = None if time_budget is None else started + time_budget
+    try:
+        _time_left(deadline, "до проверки сдвига")
+        import lightgbm as lgb
+        from sklearn.metrics import roc_auc_score
+        from sklearn.model_selection import StratifiedKFold
 
-    rng = np.random.default_rng(seed)
+        rng = np.random.default_rng(seed)
 
-    def cap(frame):
-        return frame if len(frame) <= max_rows else frame.iloc[np.sort(rng.choice(len(frame), max_rows, replace=False))]
+        def cap(frame):
+            return frame if len(frame) <= max_rows else frame.iloc[np.sort(rng.choice(len(frame), max_rows, replace=False))]
 
-    a, b = cap(X_train), cap(X_test)
-    pre = TabularPreprocessor().fit(a)
-    both = pd.concat([pre.transform(a), pre.transform(b)], ignore_index=True)
-    z = np.r_[np.zeros(len(a)), np.ones(len(b))]
-    p = np.zeros(len(both))
-    for tr, va in StratifiedKFold(3, shuffle=True, random_state=seed).split(both, z):
-        m = lgb.LGBMClassifier(n_estimators=150, learning_rate=0.1, num_leaves=63, verbose=-1, random_state=seed,
-                               n_jobs=n_jobs or default_n_jobs())
-        p[va] = m.fit(both.iloc[tr], z[tr]).predict_proba(both.iloc[va])[:, 1]
-    auc = float(roc_auc_score(z, p))
-    return {"auc": round(auc, 4), "shifted": auc > SHIFT_AUC}
+        a, b = cap(X_train), cap(X_test)
+        _time_left(deadline, "после выбора строк для проверки сдвига")
+        pre = TabularPreprocessor().fit(a)
+        _time_left(deadline, "после подготовки признаков проверки сдвига")
+        both = pd.concat([pre.transform(a), pre.transform(b)], ignore_index=True)
+        _time_left(deadline, "после преобразования признаков проверки сдвига")
+        z = np.r_[np.zeros(len(a)), np.ones(len(b))]
+        p = np.zeros(len(both))
+
+        def stop_on_time(env):
+            _time_left(deadline, "во время обучения проверки сдвига")
+
+        for tr, va in StratifiedKFold(3, shuffle=True, random_state=seed).split(both, z):
+            _time_left(deadline, "перед очередной частью проверки сдвига")
+            m = lgb.LGBMClassifier(n_estimators=150, learning_rate=0.1, num_leaves=63, verbose=-1, random_state=seed,
+                                   n_jobs=n_jobs or default_n_jobs())
+            fit_args = {"callbacks": [stop_on_time]} if deadline is not None else {}
+            m.fit(both.iloc[tr], z[tr], **fit_args)
+            _time_left(deadline, "после обучения проверки сдвига")
+            p[va] = m.predict_proba(both.iloc[va])[:, 1]
+            _time_left(deadline, "после предсказания проверки сдвига")
+        auc = float(roc_auc_score(z, p))
+        _time_left(deadline, "после расчёта AUC проверки сдвига")
+        return {"status": "ok", "complete": True, "auc": round(auc, 4), "shifted": auc > SHIFT_AUC,
+                "seconds": time.monotonic() - started}
+    except TimeoutError as error:
+        return {"status": "skipped", "complete": False, "auc": None, "shifted": False,
+                "reason": str(error), "seconds": time.monotonic() - started}
 
 
 def _em_share(p: np.ndarray, prior: float, iters: int = 200) -> float:
@@ -357,36 +389,65 @@ def _em_share(p: np.ndarray, prior: float, iters: int = 200) -> float:
     return q
 
 
+def _background_mask(p: np.ndarray, share: float) -> np.ndarray:
+    """Ровно round(share*n) фоновых строк; при ties порядок исходных строк служит стабильным разрешением."""
+    n = len(p)
+    k = int(np.clip(np.rint(share * n), 0, n))
+    mask = np.zeros(n, dtype=bool)
+    if k:
+        mask[np.argsort(-np.asarray(p), kind="stable")[:k]] = True
+    return mask
+
+
 def fit_predict_two_stage(split: SplitData, profile: dict, models=("lightgbm", "xgboost"), learning_rate: float = 0.1,
                           n_jobs: Optional[int] = None, seed: int = 0, time_budget: Optional[float] = None,
                           check: Optional[dict] = None) -> dict:
     """Многоклассовая задача со сдвигом train/test и «фоновым» классом: сначала «фон против остальных», потом класс.
 
-    Включается, только если классов не меньше трёх, самый частый класс занимает >= BACKGROUND_SHARE train и adversarial
+    Только для Macro F1 по меткам. Включается, если классов не меньше трёх, самый частый класс занимает >= BACKGROUND_SHARE train и adversarial
     AUC train/test > SHIFT_AUC (check — результат shift_check, если уже посчитан); иначе status='skipped' и агент работает
     как обычно. Для каждой модели из models: бинарная «фон / не фон» и мультикласс без фона (train_eval -> rounds_from ->
     fit_predict), вероятности смешиваются поровну, веса классов — choose_class_weights по смешанному OOF. Доля фона на
     test — EM по бинарной смеси; фоном считаются строки с наибольшей вероятностью в этой доле. Возвращает pred (исходные
     метки), background, share_train, share_test, auc, notes. Замер (public UNSW-NB15, смесь LightGBM+XGBoost, 3 seed):
     Macro F1 0.5350 -> 0.5457, лучше на каждом seed."""
-    started = time.time()
+    started = time.monotonic()
+    deadline = None if time_budget is None else started + time_budget
     notes = []
+
+    def skipped(reason, **info):
+        return {"status": "skipped", "applied": False, "reason": reason, "notes": list(notes),
+                "seconds": time.monotonic() - started, **info}
+
     try:
+        _time_left(deadline, "до двухступенчатой схемы")
         y = split.y_train
         if isinstance(y, pd.DataFrame):
             if y.shape[1] != 1:
-                return {"status": "skipped", "applied": False, "reason": "несколько таргетов", "seconds": time.time() - started}
+                return skipped("несколько таргетов")
             y = y.iloc[:, 0]
-        if _resolve_task(profile, "classification") != "classification":
-            return {"status": "skipped", "applied": False, "reason": "не классификация", "seconds": time.time() - started}
+        if _resolve_task(profile, None) != "classification":
+            return skipped("не классификация")
+        primary = (profile.get("metric") or {}).get("primary")
+        if primary is None:
+            notes.append("основная метрика не указана: двухступенчатая схема предназначена только для Macro F1")
+            return skipped(notes[-1])
+        try:
+            metric = ml_metrics.get_metric(primary)
+        except ml_metrics.MetricError:
+            return skipped(f"метрика {primary!r} не поддержана: двухступенчатая схема предназначена только для Macro F1")
+        if metric.name != "f1_macro":
+            return skipped(f"метрика {metric.name!r}: двухступенчатая схема предназначена только для Macro F1")
         counts = y.value_counts(normalize=True)
         if len(counts) < 3 or counts.iloc[0] < BACKGROUND_SHARE:
-            return {"status": "skipped", "applied": False, "seconds": time.time() - started,
-                    "reason": f"нет фонового класса: классов {len(counts)}, доля самого частого {counts.iloc[0]:.3f}"}
-        check = check or shift_check(split.X_train, split.X_test, seed=seed, n_jobs=n_jobs)
+            return skipped(f"нет фонового класса: классов {len(counts)}, доля самого частого {counts.iloc[0]:.3f}")
+        left = _time_left(deadline, "перед проверкой сдвига")
+        check = check or shift_check(split.X_train, split.X_test, seed=seed, n_jobs=n_jobs, time_budget=left)
+        if check.get("complete") is False or check.get("status") in ("skipped", "error"):
+            return skipped(check.get("reason") or check.get("error") or "проверка сдвига не завершена", auc=check.get("auc"))
+        _time_left(deadline, "после проверки сдвига")
         if not check["shifted"]:
-            return {"status": "skipped", "applied": False, "auc": check["auc"], "seconds": time.time() - started,
-                    "reason": f"сдвига train/test нет: adversarial AUC {check['auc']} <= {SHIFT_AUC}"}
+            return skipped(f"сдвига train/test нет: adversarial AUC {check['auc']} <= {SHIFT_AUC}", auc=check["auc"])
         background, share_train = counts.index[0], float(counts.iloc[0])
         is_bg = (y == background).to_numpy()
         binary = replace(split, y_train=pd.Series(np.where(is_bg, "bg", "rest"), index=y.index))
@@ -394,21 +455,35 @@ def fit_predict_two_stage(split: SplitData, profile: dict, models=("lightgbm", "
         task = profile.get("task") or {}
         prof_bin = {**profile, "task": {**task, "type": "binary"}}
         prof_att = {**profile, "task": {**task, "type": "multiclass" if (~is_bg).any() and y[~is_bg].nunique() > 2 else "binary"}}
-        budget = None if time_budget is None else time_budget / (4 * len(models))
-        common = dict(task_type="classification", learning_rate=learning_rate, n_jobs=n_jobs, seed=seed, time_budget=budget)
+        _time_left(deadline, "после подготовки данных двухступенчатой схемы")
+        stages_left = 4 * len(models)
+        common = dict(task_type="classification", learning_rate=learning_rate, n_jobs=n_jobs, seed=seed)
+
+        def stage_budget():
+            left = _time_left(deadline, "перед следующим обучением двухступенчатой схемы")
+            return None if left is None else left / stages_left
+
         p_bg, att_proba, att_oof, classes = [], [], [], None
         for model in models:
-            ev = train_eval(binary, prof_bin, model=model, **common)
+            ev = train_eval(binary, prof_bin, model=model, time_budget=stage_budget(), **common)
+            stages_left -= 1
+            _time_left(deadline, "после оценки фоновой модели")
             if ev.status != "ok":
                 raise RuntimeError(f"{model}, фон / не фон: {ev.error}")
-            out = fit_predict(binary, prof_bin, model=model, n_rounds=rounds_from(ev), **common)
+            out = fit_predict(binary, prof_bin, model=model, n_rounds=rounds_from(ev), time_budget=stage_budget(), **common)
+            stages_left -= 1
+            _time_left(deadline, "после предсказания фоновой модели")
             if out["status"] != "ok":
                 raise RuntimeError(f"{model}, фон / не фон: {out['error']}")
             p_bg.append(np.asarray(out["proba"])[:, [str(c) for c in out["classes"]].index("bg")])
-            ev = train_eval(attack, prof_att, model=model, **common)
+            ev = train_eval(attack, prof_att, model=model, time_budget=stage_budget(), **common)
+            stages_left -= 1
+            _time_left(deadline, "после оценки модели без фона")
             if ev.status != "ok":
                 raise RuntimeError(f"{model}, без фона: {ev.error}")
-            out = fit_predict(attack, prof_att, model=model, n_rounds=rounds_from(ev), **common)
+            out = fit_predict(attack, prof_att, model=model, n_rounds=rounds_from(ev), time_budget=stage_budget(), **common)
+            stages_left -= 1
+            _time_left(deadline, "после предсказания модели без фона")
             if out["status"] != "ok":
                 raise RuntimeError(f"{model}, без фона: {out['error']}")
             classes = list(out["classes"]) if classes is None else classes
@@ -423,17 +498,23 @@ def fit_predict_two_stage(split: SplitData, profile: dict, models=("lightgbm", "
         oof = np.mean([pred[np.searchsorted(i, idx)] for i, pred in att_oof], axis=0)
         y_att = attack.y_train.reset_index(drop=True)
         codes = LabelCodec().fit(y_att).encode(y_att.iloc[idx])
+        _time_left(deadline, "перед подбором весов классов")
         choice = ml_postprocess.choose_class_weights(oof, codes, groups=ml_validation.row_groups(attack.X_train.iloc[idx]))
+        _time_left(deadline, "после подбора весов классов")
         share = _em_share(p, share_train)
-        is_test_bg = p >= np.quantile(p, 1 - share)
+        _time_left(deadline, "после оценки доли фона")
+        is_test_bg = _background_mask(p, share)
         labels = np.asarray(classes, dtype=object)
         pred = np.where(is_test_bg, background, labels[(proba * choice["weights"]).argmax(1)])
+        _time_left(deadline, "после постобработки предсказаний")
         notes.append(f"двухступенчатая схема: фон {background!r}, доля train {share_train:.3f}, оценка на test {share:.3f}, "
                      f"adversarial AUC {check['auc']}, модели {list(models)}")
         return {"status": "ok", "applied": True, "pred": pred, "background": background, "share_train": share_train,
                 "share_test": share, "auc": check["auc"], "class_weights_applied": bool(choice["applied"]),
-                "models": list(models), "notes": notes, "seconds": time.time() - started}
+                "models": list(models), "notes": notes, "seconds": time.monotonic() - started}
+    except TimeoutError as error:
+        return skipped(str(error))
     except Exception as error:  # ожидаемые сбои — статусом, как в train_eval / fit_predict
         return {"status": "error", "applied": False, "error": f"{type(error).__name__}: {error}",
-                "trace": traceback.format_exc(limit=3), "seconds": time.time() - started}
+                "trace": traceback.format_exc(limit=3), "seconds": time.monotonic() - started}
 

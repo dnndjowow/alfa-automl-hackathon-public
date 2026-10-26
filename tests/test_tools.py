@@ -387,3 +387,222 @@ class TwoStageTest(unittest.TestCase):
         self.assertIn("фонового", out["reason"])
         out = mt.fit_predict_two_stage(split, {"task": {"type": "regression"}, "metric": {"primary": "rmse"}}, n_jobs=2)
         self.assertEqual(out["status"], "skipped")
+
+
+class TwoStageSafetyTest(unittest.TestCase):
+    """Границы применения и общий бюджет: часы/ML заменены, порядок вызовов и постобработка — реальные."""
+
+    def setUp(self):
+        self.split, _, self.profile = TwoStageTest.make(n_train=120, n_test=10, bg_train=0.6)
+        self.check = {"auc": 0.95, "shifted": True}  # старый формат check тоже поддерживается
+        self.now = 100.0
+
+    def clock(self):
+        return self.now
+
+    def fake_eval(self, data, profile, **kwargs):
+        classes = ml_data.LabelCodec().fit(data.y_train).classes_
+        return mt.EvalResult(status="ok", score=0.5, best_iterations=[5], classes=list(classes),
+                             oof_index=np.arange(len(data.y_train)),
+                             oof_pred=np.full((len(data.y_train), len(classes)), 1 / len(classes)))
+
+    def fake_fit(self, data, profile, **kwargs):
+        classes = list(ml_data.LabelCodec().fit(data.y_train).classes_)
+        n = len(data.X_test)
+        proba = np.tile([0.4, 0.6], (n, 1)) if classes == ["bg", "rest"] else np.full((n, len(classes)), 1 / len(classes))
+        return {"status": "ok", "classes": classes, "proba": proba}
+
+    @staticmethod
+    def unit_weights(proba, *args, **kwargs):
+        return {"applied": False, "weights": np.ones(proba.shape[1])}
+
+    def test_constant_probabilities_choose_exact_count_including_zero_and_all(self):
+        # F20: раньше одинаковые p давали 100% фона даже при EM-доле 0.
+        with mock.patch.object(mt, "train_eval", side_effect=self.fake_eval), \
+             mock.patch.object(mt, "fit_predict", side_effect=self.fake_fit), \
+             mock.patch.object(mt.ml_postprocess, "choose_class_weights", side_effect=self.unit_weights):
+            for share, expected in ((0.0, 0), (0.2, 2), (1.0, 10)):
+                with self.subTest(share=share), mock.patch.object(mt, "_em_share", return_value=share):
+                    out = mt.fit_predict_two_stage(self.split, self.profile, models=("lightgbm",), check=self.check)
+                    self.assertEqual(out["status"], "ok", out.get("error"))
+                    selected = out["pred"] == out["background"]
+                    self.assertEqual(int(selected.sum()), expected)
+                    np.testing.assert_array_equal(np.flatnonzero(selected), np.arange(expected))
+        np.testing.assert_array_equal(mt._background_mask(np.array([.1, .9, .8, .2]), .5), [False, True, True, False])
+
+    def test_regression_with_a_background_is_skipped_before_shift_or_training(self):
+        # F24: три числовых значения и частый ноль не должны становиться классификацией.
+        self.split.y_train = self.split.y_train.map({"N": 0., "A": 1., "B": 2., "C": 3.})
+        profile = {"task": {"type": "regression"}, "metric": {"primary": "rmse"}}
+        with mock.patch.object(mt, "shift_check") as shift, mock.patch.object(mt, "train_eval") as train:
+            out = mt.fit_predict_two_stage(self.split, profile)
+        self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+        self.assertIn("не классификация", out["reason"])
+        shift.assert_not_called()
+        train.assert_not_called()
+
+    def test_non_macro_or_missing_metric_skips_with_a_reason(self):
+        # F22: принятие весов Macro F1 не должно менять accuracy/logloss/неизвестную метрику.
+        for primary in ("accuracy", "balanced_accuracy", "f1_weighted", "logloss", "ndcg", None):
+            profile = {**self.profile, "metric": {"primary": primary}}
+            with self.subTest(primary=primary), mock.patch.object(mt, "shift_check") as shift, \
+                 mock.patch.object(mt, "train_eval") as train:
+                out = mt.fit_predict_two_stage(self.split, profile)
+                self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+                self.assertIn("Macro F1", out["reason"])
+                if primary is None:
+                    self.assertTrue(out["notes"])
+                shift.assert_not_called()
+                train.assert_not_called()
+
+    def test_macro_alias_and_legacy_check_are_accepted(self):
+        profile = {**self.profile, "metric": {"primary": "Macro F1"}}
+        with mock.patch.object(mt, "train_eval", side_effect=self.fake_eval), \
+             mock.patch.object(mt, "fit_predict", side_effect=self.fake_fit), \
+             mock.patch.object(mt.ml_postprocess, "choose_class_weights", side_effect=self.unit_weights), \
+             mock.patch.object(mt, "shift_check") as shift:
+            out = mt.fit_predict_two_stage(self.split, profile, models=("lightgbm",), check=self.check)
+        self.assertEqual(out["status"], "ok", out.get("error"))
+        shift.assert_not_called()
+
+    def test_empty_budget_starts_neither_shift_nor_training(self):
+        with mock.patch.object(mt, "shift_check") as shift, mock.patch.object(mt, "train_eval") as train:
+            out = mt.fit_predict_two_stage(self.split, self.profile, time_budget=0)
+        self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+        self.assertIn("бюджет", out["reason"])
+        shift.assert_not_called()
+        train.assert_not_called()
+
+    def test_incomplete_shift_is_not_used_for_training(self):
+        check = {"status": "skipped", "complete": False, "shifted": False, "auc": None, "reason": "бюджет detector"}
+        with mock.patch.object(mt, "train_eval") as train:
+            out = mt.fit_predict_two_stage(self.split, self.profile, check=check)
+        self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+        self.assertIn("detector", out["reason"])
+        train.assert_not_called()
+
+    def test_shift_consuming_the_budget_prevents_all_stage_calls(self):
+        def slow_shift(*args, **kwargs):
+            self.now += 11
+            return self.check
+
+        with mock.patch.object(mt.time, "monotonic", side_effect=self.clock), \
+             mock.patch.object(mt, "shift_check", side_effect=slow_shift) as shift, \
+             mock.patch.object(mt, "train_eval") as train, mock.patch.object(mt, "fit_predict") as fit:
+            out = mt.fit_predict_two_stage(self.split, self.profile, time_budget=10)
+        self.assertEqual(shift.call_args.kwargs["time_budget"], 10)
+        self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+        train.assert_not_called()
+        fit.assert_not_called()
+
+    def test_timeout_after_eval_or_predict_does_not_start_later_stages(self):
+        for phase in ("eval", "predict"):
+            self.now = 100
+
+            def evaluate(*args, **kwargs):
+                if phase == "eval":
+                    self.now += 11
+                return self.fake_eval(*args, **kwargs)
+
+            def predict(*args, **kwargs):
+                self.now += 11
+                return self.fake_fit(*args, **kwargs)
+
+            with self.subTest(phase=phase), mock.patch.object(mt.time, "monotonic", side_effect=self.clock), \
+                 mock.patch.object(mt, "train_eval", side_effect=evaluate) as train, \
+                 mock.patch.object(mt, "fit_predict", side_effect=predict) as fit:
+                out = mt.fit_predict_two_stage(self.split, self.profile, check=self.check, time_budget=10)
+                self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+                self.assertNotIn("pred", out)
+                self.assertEqual(train.call_count, 1)
+                self.assertEqual(fit.call_count, 0 if phase == "eval" else 1)
+
+    def test_stage_quotas_use_the_remaining_time_after_every_operation(self):
+        eval_costs, fit_costs, quotas = iter([30, 10]), iter([20, 5]), []
+
+        def shift(*args, **kwargs):
+            self.now += 20
+            return self.check
+
+        def evaluate(*args, **kwargs):
+            quotas.append(kwargs["time_budget"])
+            self.now += next(eval_costs)
+            return self.fake_eval(*args, **kwargs)
+
+        def predict(*args, **kwargs):
+            quotas.append(kwargs["time_budget"])
+            self.now += next(fit_costs)
+            return self.fake_fit(*args, **kwargs)
+
+        with mock.patch.object(mt.time, "monotonic", side_effect=self.clock), \
+             mock.patch.object(mt, "shift_check", side_effect=shift), \
+             mock.patch.object(mt, "train_eval", side_effect=evaluate), \
+             mock.patch.object(mt, "fit_predict", side_effect=predict), \
+             mock.patch.object(mt.ml_postprocess, "choose_class_weights", side_effect=self.unit_weights):
+            out = mt.fit_predict_two_stage(self.split, self.profile, models=("lightgbm",), time_budget=100)
+        self.assertEqual(out["status"], "ok", out.get("error"))
+        np.testing.assert_allclose(quotas, [20, 50 / 3, 15, 20])
+        self.assertEqual(out["seconds"], 85)
+
+    def test_timeout_during_postprocess_never_returns_a_candidate(self):
+        for phase in ("weights", "em"):
+            self.now = 100
+
+            def weights(*args, **kwargs):
+                if phase == "weights":
+                    self.now += 11
+                return self.unit_weights(*args, **kwargs)
+
+            def em(*args, **kwargs):
+                self.now += 11
+                return .2
+
+            with self.subTest(phase=phase), mock.patch.object(mt.time, "monotonic", side_effect=self.clock), \
+                 mock.patch.object(mt, "train_eval", side_effect=self.fake_eval), \
+                 mock.patch.object(mt, "fit_predict", side_effect=self.fake_fit), \
+                 mock.patch.object(mt.ml_postprocess, "choose_class_weights", side_effect=weights), \
+                 mock.patch.object(mt, "_em_share", side_effect=em) as estimate:
+                out = mt.fit_predict_two_stage(self.split, self.profile, models=("lightgbm",), check=self.check, time_budget=10)
+                self.assertEqual((out["status"], out["applied"]), ("skipped", False))
+                self.assertNotIn("pred", out)
+                self.assertEqual(estimate.call_count, 0 if phase == "weights" else 1)
+
+    def test_shift_check_timeout_after_preprocessing_skips_before_fit(self):
+        pre = mock.Mock()
+
+        def prepare(frame):
+            self.now += 11
+            return pre
+
+        pre.fit.side_effect = prepare
+        with mock.patch.object(mt.time, "monotonic", side_effect=self.clock), \
+             mock.patch.object(mt, "TabularPreprocessor", return_value=pre), \
+             mock.patch("lightgbm.LGBMClassifier") as model:
+            out = mt.shift_check(self.split.X_train, self.split.X_test, time_budget=10)
+        self.assertEqual((out["status"], out["complete"], out["shifted"], out["auc"]), ("skipped", False, False, None))
+        pre.transform.assert_not_called()
+        model.assert_not_called()
+
+    def test_shift_check_stops_during_fit_or_after_predict_without_a_partial_auc(self):
+        for phase in ("fit", "predict"):
+            self.now = 100
+            learner = mock.Mock()
+
+            def fit(X, y, **kwargs):
+                if phase == "fit":
+                    self.now += 11
+                    kwargs["callbacks"][0](None)
+                return learner
+
+            def predict(X):
+                self.now += 11
+                return np.tile([.5, .5], (len(X), 1))
+
+            learner.fit.side_effect = fit
+            learner.predict_proba.side_effect = predict
+            with self.subTest(phase=phase), mock.patch.object(mt.time, "monotonic", side_effect=self.clock), \
+                 mock.patch("lightgbm.LGBMClassifier", return_value=learner) as model:
+                out = mt.shift_check(self.split.X_train, self.split.X_test, time_budget=10)
+                self.assertEqual((out["status"], out["complete"], out["auc"]), ("skipped", False, None))
+                self.assertEqual(model.call_count, 1)
+                self.assertEqual(learner.predict_proba.call_count, 0 if phase == "fit" else 1)
