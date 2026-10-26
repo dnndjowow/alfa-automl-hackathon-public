@@ -3,6 +3,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import numpy as np
 import pandas as pd
@@ -893,6 +894,129 @@ class TwoStageStepTest(unittest.TestCase):
             before = pd.read_csv(root / "submission.csv")
             solution.two_stage(session)
             return session.written, before, pd.read_csv(root / "submission.csv")
+
+    def prepared_session(self, metric="f1_macro", prediction_format="auto", per_class=False):
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name)
+        self.write_task(root, shift=3.0)
+        if per_class:
+            sample = pd.read_csv(root / "sample_submission.csv")[["id"]]
+            for label in ("N", "A", "B", "C"):
+                sample[label] = 0.25
+            sample.to_csv(root / "sample_submission.csv", index=False)
+        session = agent_tools.Session(root / "task.md", deadline=time.monotonic() + 900, log=lambda m: None, n_jobs=2)
+        setup = session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "multiclass",
+                                           "metric": metric, "prediction_format": prediction_format})
+        self.assertTrue(setup["ok"], setup)
+        run = session.call("evaluate", {"model": "lightgbm", **FAST})
+        self.assertTrue(run["ok"], run)
+        final = session.call("finalize", {"run_id": run["run_id"]})
+        self.assertTrue(final["ok"], final)
+        return session, root / "submission.csv"
+
+    def assert_step_keeps_answer(self, session, path):
+        import solution
+        before, written = path.read_bytes(), session.written
+        solution.two_stage(session)
+        self.assertEqual(path.read_bytes(), before)
+        self.assertIs(session.written, written)
+
+    def test_probability_output_is_skipped_before_shift_check(self):
+        import solution
+        # Даже принудительный label не делает шаблон с четырьмя вероятностями ответом в один столбец.
+        for fmt, per_class in (("proba", False), ("proba", True), ("auto", True), ("label", True)):
+            with self.subTest(format=fmt, per_class=per_class):
+                session, path = self.prepared_session(prediction_format=fmt, per_class=per_class)
+                with mock.patch("ml_tools.shift_check") as detector, mock.patch("ml_tools.fit_predict_two_stage") as fit:
+                    self.assertEqual(solution.two_stage_reserve(session), 0.0)
+                    self.assert_step_keeps_answer(session, path)
+                    detector.assert_not_called()
+                    fit.assert_not_called()
+
+    def test_only_macro_f1_is_enabled(self):
+        import solution
+        for metric in ("accuracy", "f1_weighted"):
+            with self.subTest(metric=metric):
+                session, path = self.prepared_session(metric=metric)
+                with mock.patch("ml_tools.shift_check") as detector, mock.patch("ml_tools.fit_predict_two_stage") as fit:
+                    self.assertEqual(solution.two_stage_reserve(session), 0.0)
+                    self.assert_step_keeps_answer(session, path)
+                    detector.assert_not_called()
+                    fit.assert_not_called()
+
+    def test_expired_deadline_is_skipped_before_shift_check(self):
+        import solution
+        session, path = self.prepared_session()
+        session.deadline = time.monotonic() - 1.0
+        with mock.patch("ml_tools.shift_check") as detector, mock.patch("ml_tools.fit_predict_two_stage") as fit:
+            self.assertEqual(solution.two_stage_reserve(session), 0.0)
+            self.assert_step_keeps_answer(session, path)
+            detector.assert_not_called()
+            fit.assert_not_called()
+
+    def test_no_background_is_skipped_before_shift_check(self):
+        import solution
+        session, path = self.prepared_session()
+        split = session.setup["split"]
+        split.y_train = pd.Series(np.arange(len(split.y_train)) % 4)
+        session.data.train["y"] = split.y_train.to_numpy()
+        with mock.patch("ml_tools.shift_check") as detector:
+            self.assertEqual(solution.two_stage_reserve(session), 0.0)
+            self.assert_step_keeps_answer(session, path)
+            detector.assert_not_called()
+
+    def test_unaffordable_fit_is_skipped_before_shift_check(self):
+        session, path = self.prepared_session()
+        for run in session.runs.values():
+            run["result"]["seconds"] = 1000.0
+        with mock.patch("ml_tools.shift_check") as detector, mock.patch("ml_tools.fit_predict_two_stage") as fit:
+            self.assert_step_keeps_answer(session, path)
+            detector.assert_not_called()
+            fit.assert_not_called()
+
+    def test_shift_timeout_keeps_the_answer(self):
+        import solution
+        session, path = self.prepared_session()
+        skipped = {"status": "skipped", "complete": False, "shifted": False, "auc": None, "reason": "time budget"}
+        with mock.patch("ml_tools.shift_check", return_value=skipped) as detector, \
+                mock.patch("ml_tools.fit_predict_two_stage") as fit:
+            self.assertEqual(solution.two_stage_reserve(session), 0.0)
+            self.assert_step_keeps_answer(session, path)
+            self.assertGreater(detector.call_args.kwargs["time_budget"], 0.0)
+            fit.assert_not_called()
+
+    def test_detector_time_is_subtracted_from_fit_budget(self):
+        import solution
+        session, path = self.prepared_session()
+        clock = [100.0]
+        session.deadline = 1000.0
+
+        def detector(*args, **kwargs):
+            self.assertAlmostEqual(kwargs["time_budget"], 720.0)
+            clock[0] += 100.0
+            return {"auc": 0.95, "shifted": True, "complete": True}
+
+        with mock.patch("solution.time.monotonic", side_effect=lambda: clock[0]), \
+                mock.patch("ml_tools.shift_check", side_effect=detector), \
+                mock.patch("ml_tools.fit_predict_two_stage", return_value={"status": "skipped", "reason": "time budget"}) as fit:
+            self.assert_step_keeps_answer(session, path)
+            self.assertAlmostEqual(fit.call_args.kwargs["time_budget"], 620.0)
+
+    def test_over_budget_result_cannot_replace_answer(self):
+        import solution
+        session, path = self.prepared_session()
+        clock = [100.0]
+        session.deadline = 1000.0
+
+        def fit(*args, **kwargs):
+            clock[0] = 821.0
+            return {"status": "ok", "pred": np.repeat("N", len(session.setup["split"].X_test))}
+
+        with mock.patch("solution.time.monotonic", side_effect=lambda: clock[0]), \
+                mock.patch("ml_tools.shift_check", return_value={"auc": 0.95, "shifted": True}), \
+                mock.patch("ml_tools.fit_predict_two_stage", side_effect=fit):
+            self.assert_step_keeps_answer(session, path)
 
     def test_replaces_the_answer_under_shift(self):
         written, before, after = self.run_step(shift=3.0)

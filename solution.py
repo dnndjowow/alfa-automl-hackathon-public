@@ -288,29 +288,46 @@ def polish(session) -> None:
             return
 
 
+def _two_stage_labels_only(session, schema, prediction_format="auto") -> bool:
+    """Схема возвращает метки: шаблон должен содержать один столбец прогноза, а не вероятности классов."""
+    if prediction_format == "proba":
+        return False
+    columns = [c for c in session._output_columns(schema) if c not in schema.id_cols]
+    if len(columns) != 1:
+        return False
+    col = columns[0]
+    return col == schema.target_cols[0] or (col not in session.data.train.columns and col not in session.data.test.columns)
+
+
 def two_stage_reserve(session) -> float:
     """Сколько секунд заранее отложить под two_stage: если по паспорту задача под схему подходит (один таргет, классов
-    >= 3, самый частый >= 30%, метрика по меткам, adversarial AUC > 0.8) — 20% оставшегося времени, иначе 0.
+    >= 3, самый частый >= 30%, Macro F1, ответ метками, adversarial AUC > 0.8) — 20% оставшегося времени, иначе 0.
     Без резерва запасная политика и tune заполняют всё время, и схема не успевает (прогон 26.10: нужно 864 с, осталось 423)."""
-    if os.environ.get("AGENT_TWO_STAGE", "on").lower() == "off":
+    if os.environ.get("AGENT_TWO_STAGE", "on").lower() == "off" or session.time_left() < 300:
         return 0.0
     try:
         import ml_data
         import ml_metrics
         import ml_schema
         import ml_tools
-        profile = session.profile
+        setup = session.setup
+        profile = setup["profile"] if setup else session.profile
         primary = (profile.get("metric") or {}).get("primary")
-        if not primary or ml_metrics.get_metric(primary).needs != "labels":
+        if profile.get("task", {}).get("type") != "multiclass" or not primary or ml_metrics.get_metric(primary).name != "f1_macro":
             return 0.0
-        schema = ml_schema.resolve_schema(profile["schema"])
-        if len(schema.target_cols) != 1:
+        schema = setup["schema"] if setup else ml_schema.resolve_schema(profile["schema"])
+        fmt = setup["prediction_format"] if setup else "auto"
+        if len(schema.target_cols) != 1 or not _two_stage_labels_only(session, schema, fmt):
             return 0.0
         split = ml_data.split_task(session.data, schema)
         counts = split.y_train.value_counts(normalize=True)
         if len(counts) < 3 or counts.iloc[0] < ml_tools.BACKGROUND_SHARE:
             return 0.0
-        if not ml_tools.shift_check(split.X_train, split.X_test, n_jobs=session.n_jobs, seed=session.seed)["shifted"]:
+        if session.time_left() < 300:
+            return 0.0
+        check = ml_tools.shift_check(split.X_train, split.X_test, n_jobs=session.n_jobs, seed=session.seed,
+                                     time_budget=0.8 * session.time_left())
+        if check.get("complete") is False or not check["shifted"] or session.time_left() < 300:
             return 0.0
         return 0.2 * session.time_left()
     except Exception as error:   # паспорт неуверенный или метрика своя — без резерва, как раньше
@@ -321,23 +338,24 @@ def two_stage_reserve(session) -> float:
 def two_stage(session) -> None:
     """Сдвиг train/test и «фоновый» класс (Normal среди атак): записать ответ ml_tools.fit_predict_two_stage вместо
     ответа агента (Юра, 26.10: public-мультикласс, смесь LightGBM+XGBoost, Macro F1 0.5350 -> 0.5457 на 3 сидах).
-    Только один таргет, multiclass, метрика по меткам, уже записан ответ модели и хватает времени; иначе — ничего."""
+    Только один таргет, multiclass, Macro F1, ответ метками, уже записан ответ модели и хватает времени; иначе — ничего."""
     if os.environ.get("AGENT_TWO_STAGE", "on").lower() == "off":
         return
     setup = session.setup
     if setup is None or setup["task_type"] != "multiclass" or len(setup["splits"]) != 1:
         return
     metric = setup.get("metric_obj")
-    if metric is None or metric.needs != "labels" or not (session.written or {}).get("run_id"):
+    if metric is None or metric.name != "f1_macro" or not (session.written or {}).get("run_id"):
+        return
+    if not _two_stage_labels_only(session, setup["schema"], setup["prediction_format"]) or session.time_left() < 300:
         return
     import numpy as np
 
     import agent_tools
     import ml_tools
     split = setup["split"]
-    check = ml_tools.shift_check(split.X_train, split.X_test, n_jobs=session.n_jobs, seed=session.seed)
-    if not check["shifted"]:
-        log(f"[two_stage] не включается: adversarial AUC {check['auc']}")
+    counts = split.y_train.value_counts(normalize=True)
+    if len(counts) < 3 or counts.iloc[0] < ml_tools.BACKGROUND_SHARE:
         return
     # 4 цикла ядра (2 модели × 2 ступени, lr 0.1) ≈ одна оценка LightGBM + одна XGBoost агента (lr 0.05):
     # на public-мультиклассе оценка LightGBM 115 с, вся схема 136 с (Mac)
@@ -354,14 +372,30 @@ def two_stage(session) -> None:
     if session.time_left() < 300 or cost > 0.8 * session.time_left():
         log(f"[two_stage] не хватает времени: нужно ≈{cost:.0f}s, осталось {session.time_left():.0f}s")
         return
+    # Проверка сдвига входит в те же 80% остатка: её время вычитается из бюджета обучения.
+    deadline = time.monotonic() + 0.8 * session.time_left()
+    check = ml_tools.shift_check(split.X_train, split.X_test, n_jobs=session.n_jobs, seed=session.seed,
+                                 time_budget=max(0.0, deadline - time.monotonic()))
+    if check.get("complete") is False or not check["shifted"]:
+        log(f"[two_stage] не включается: {check.get('reason') or 'adversarial AUC ' + str(check.get('auc'))}")
+        return
+    remaining = deadline - time.monotonic()
+    if cost > remaining or session.time_left() < 300:
+        log("[two_stage] после проверки сдвига не хватает времени: пропуск")
+        return
     out = ml_tools.fit_predict_two_stage(split, setup["profile"], models=("lightgbm", "xgboost"), n_jobs=session.n_jobs,
-                                         seed=session.seed, time_budget=0.8 * session.time_left(), check=check)
+                                         seed=session.seed, time_budget=remaining, check=check)
     if out["status"] != "ok":
         log(f"[two_stage] {out['status']}: {out.get('reason') or out.get('error')}")
+        return
+    if time.monotonic() >= deadline:
+        log("[two_stage] бюджет исчерпан: остаётся прежний ответ")
         return
     main = setup["schema"].target_cols[0]
     pred = np.asarray(out["pred"], dtype=object)
     frame, notes = session._assemble(setup, {main: (pred, None, np.unique(pred.astype(str)))})
+    if time.monotonic() >= deadline:
+        return
     path = agent_tools.write_submission(frame, session.task_dir, len(split.X_test), setup["schema"].id_cols)
     session.written = {"run_id": None, "model": "two_stage", "score": None, "replaced": session.written,
                        "two_stage": {k: out[k] for k in ("background", "share_train", "share_test", "auc")}}
