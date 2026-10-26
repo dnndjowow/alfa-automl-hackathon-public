@@ -785,7 +785,7 @@ class Session:
             if task_type == "binary" and y.nunique() != 2:
                 return {"ok": False, "error": f"в {target!r} {y.nunique()} классов, а не 2: выберите multiclass"}
         main = splits[schema.target_cols[0]]
-        positive = {}
+        positive, per_target = {}, {}
         if task_type == "binary":
             for target, split in splits.items():
                 classes = ml_data.LabelCodec().fit(split.y_train).classes_
@@ -798,9 +798,11 @@ class Session:
                 positive[target] = chosen if chosen is not None else guess_positive_class(classes, split.y_train,
                                                                                           self.data.text)
             if binary_kind:
-                first = splits[schema.target_cols[0]]
-                classes = list(ml_data.LabelCodec().fit(first.y_train).classes_)
-                resolved = _binary_metric(binary_kind, classes.index(positive[schema.target_cols[0]]))
+                # своя метрика у каждого таргета: коды положительного класса могут различаться (ревью 26.10, F06)
+                for target, split in splits.items():
+                    classes = list(ml_data.LabelCodec().fit(split.y_train).classes_)
+                    per_target[target] = _binary_metric(binary_kind, classes.index(positive[target]))
+                resolved = per_target[schema.target_cols[0]]
 
         # профиль для ml_tools с выбранными типом задачи и метрикой (иначе там останется эвристика);
         # своей метрики ml_tools по имени не знает — для его проверки семейства подставляем стандартную
@@ -822,7 +824,8 @@ class Session:
         self.featuresets = {0: {"splits": splits, "specs": []}}   # набор признаков -> разрезанные данные
         self.featureset = 0
         self.setup = {"schema": schema, "splits": splits, "split": main, "profile": profile, "task_type": task_type,
-                      "metric": resolved.name, "metric_obj": resolved, "higher_is_better": resolved.higher_is_better,
+                      "metric": resolved.name, "metric_obj": resolved, "metric_objs": per_target,
+                      "higher_is_better": resolved.higher_is_better,
                       "prediction_format": prediction_format, "positive": positive, "reason": reason}
         self.plan, self.plan_key = plan, _validation_key(plan)
         self.runs, self._fits, self._fold_cache, self._reval_cache, self._fold_metric_cache = {}, {}, {}, {}, {}
@@ -895,7 +898,7 @@ class Session:
             # бюджет делится поровну; недоиспользованное время переходит следующим таргетам
             share = max(10.0, (budget - (time.monotonic() - started)) / (len(splits) - number))
             evals[target] = ml_tools.train_eval(
-                split, self.setup["profile"], model=model, metric=self.setup["metric_obj"], validation=plan,
+                split, self.setup["profile"], model=model, metric=self._metric(target), validation=plan,
                 params=params, task_type=self.setup["task_type"], target_transform=target_transform, n_jobs=self.n_jobs,
                 seed=self.seed, time_budget=share, max_rounds=int(max_rounds),
                 learning_rate=float(learning_rate), subsample=subsample,
@@ -1126,6 +1129,10 @@ class Session:
     def _ok_runs(self, full_only=False):
         return [r for r, v in self.runs.items() if v["result"]["status"] == "ok"
                 and not (full_only and v["config"]["subsample"] is not None)]
+
+    def _metric(self, target):
+        """Метрика задачи для таргета: у бинарных F1/precision/recall — по его положительному классу."""
+        return (self.setup.get("metric_objs") or {}).get(target, self.setup["metric_obj"])
 
     def _is_better(self, new, old) -> bool:
         return ml_metrics.is_better(self.setup["metric_obj"], new, old)
@@ -1503,7 +1510,7 @@ class Session:
         setup, run = self.setup, self.runs[run_id]
         split = setup["splits"][target]
         labels = fit["pred"]
-        metric = setup["metric_obj"]
+        metric = self._metric(target)
         if mode == "off" or metric.needs != "labels" or setup["metric"] == "accuracy" \
                 or run["config"]["subsample"] or fit["proba"] is None:
             return labels, None
@@ -1529,7 +1536,7 @@ class Session:
 
     def _oof_metric(self, target, index, pred) -> float:
         """Метрика задачи на OOF-предсказаниях (как oof_score в ml_tools)."""
-        split, metric = self.setup["splits"][target], self.setup["metric_obj"]
+        split, metric = self.setup["splits"][target], self._metric(target)
         y = split.y_train.iloc[index]
         if self.setup["task_type"] == "regression":
             return metric(y.to_numpy(dtype=float), pred)
@@ -1662,7 +1669,7 @@ class Session:
             out = {}
             for target, split in splits.items():
                 result = ml_tools.train_eval(
-                    split, self.setup["profile"], model=config["model"], metric=self.setup["metric_obj"],
+                    split, self.setup["profile"], model=config["model"], metric=self._metric(target),
                     validation=run.get("plan") or self.plan, params=config["params"], task_type=self.setup["task_type"],
                     target_transform=config["target_transform"], n_jobs=self.n_jobs, seed=self.seed + offset,
                     time_budget=max(20.0, self.time_left() / 4), max_rounds=config["max_rounds"],
@@ -1706,21 +1713,31 @@ class Session:
         notes, frame = [], pd.DataFrame(index=range(n))
         main = schema.target_cols[0]
 
-        class_map = None
-        pred, proba, classes = predictions[main]
-        if classification and proba is not None and setup["prediction_format"] != "label" and len(predictions) == 1:
-            candidates = [c for c in columns if c not in ids.columns and c != main]
-            if len(candidates) >= 2:
-                class_map = match_class_columns(candidates, classes)
-                if class_map is None and len(candidates) == len(classes):
-                    class_map = dict(zip(candidates, classes))
-                    notes.append(f"столбцы {candidates} сопоставлены классам {list(map(str, classes))} по порядку")
+        class_map = {}   # столбец ответа -> (таргет, класс): вероятности классов
+        if classification and setup["prediction_format"] != "label":
+            candidates = [c for c in columns if c not in ids.columns and c not in predictions]
+            for target, (_, proba, classes) in predictions.items():
+                if proba is None:
+                    continue
+                if len(predictions) == 1:
+                    own = {c: c for c in candidates}
+                else:   # несколько таргетов: y_0, risk_bad — столбцы таргета по префиксу имени (ревью 26.10, F07)
+                    own = {c: str(c)[len(str(target)):].lstrip("_-. ") for c in candidates
+                           if str(c).startswith(str(target)) and c not in class_map}
+                if len(own) < 2:
+                    continue
+                found = match_class_columns(list(own.values()), classes)
+                if found is None and len(own) == len(classes):
+                    found = dict(zip(own.values(), classes))
+                    notes.append(f"столбцы {list(own)} сопоставлены классам {list(map(str, classes))} по порядку")
+                if found is not None:
+                    class_map.update({c: (target, found[name]) for c, name in own.items()})
         wants_proba = classification and setup["task_type"] == "binary" and self._wants_proba(setup)
 
         alias = {}
         if len(predictions) == 1 and main not in columns:
             # столбец ответа назван иначе, чем таргет (prediction, target, ...): прогноз пишем в него
-            unknown = [c for c in columns if c not in ids.columns and not (class_map and c in class_map)
+            unknown = [c for c in columns if c not in ids.columns and c not in class_map
                        and c not in test.columns and (train is None or c not in train.columns)]
             if len(unknown) == 1:
                 alias[unknown[0]] = main
@@ -1743,8 +1760,9 @@ class Session:
                     frame[col] = labels
                 else:
                     frame[col] = np.asarray(pred, dtype=float)
-            elif class_map and col in class_map:
-                frame[col] = np.asarray(predictions[main][1])[:, list(predictions[main][2]).index(class_map[col])]
+            elif col in class_map:
+                target, cls = class_map[col]
+                frame[col] = np.asarray(predictions[target][1])[:, list(predictions[target][2]).index(cls)]
             elif col in test.columns:
                 frame[col] = test[col].to_numpy()
                 notes.append(f"{col}: скопирован из test")

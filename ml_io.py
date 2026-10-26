@@ -299,6 +299,10 @@ def load_task(task_md) -> TaskData:
     # совсем («NA» — законный класс: пропуск по условию — пустая ячейка), в регрессии переводим только
     # столбцы из чисел и меток пропуска (Y1: «NA» в числовом таргете ломал регрессию)
     target_like = [c for c in data.train.columns if data.test is None or c not in data.test.columns]
+    if data.test is not None and len(data.test) >= 10:
+        # таргет-заглушка в test (все 0 или пусто), а в train — разные значения: это тоже таргет (ревью 26.10, F02)
+        target_like += [c for c in data.train.columns if c in data.test.columns
+                        and data.test[c].nunique(dropna=False) <= 1 and data.train[c].nunique(dropna=False) > 1]
     numeric = numeric_text_columns(data.train, strict=target_like)
     if _classification_task(data.text):
         numeric = [c for c in numeric if c not in target_like]

@@ -602,6 +602,48 @@ class AddFeaturesTest(unittest.TestCase):
             self.assertIn("другую схему", out["error"])
             self.assertTrue(session.call("evaluate", {"learning_rate": 0.2, "max_rounds": 80})["ok"])
 
+    def test_binary_f1_uses_each_targets_positive_class(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(tmp, kind="regression", n_train=400, n_test=50)
+            folder = task.task_md.parent / "data" / "participants"
+            rng = np.random.default_rng(0)
+            frame = pd.read_csv(folder / "train.csv")
+            frame["yy"] = rng.integers(0, 2, len(frame))
+            frame["risk"] = np.where(rng.random(len(frame)) < 0.2, "bad", "good")   # редкий bad — положительный
+            frame.drop(columns=["y"]).to_csv(folder / "train.csv", index=False)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            out = session.call("set_task", {"target_cols": ["yy", "risk"], "id_cols": ["id"], "task_type": "binary",
+                                            "metric": "f1"})
+            self.assertTrue(out["ok"], out)
+            self.assertEqual(out["positive_class"], {"yy": "1", "risk": "bad"})
+            truth = np.array([0, 1, 1, 1])                     # risk: коды bad=0, good=1
+            always_good = np.ones(4, dtype=int)
+            self.assertEqual(session._metric("risk")(truth, always_good, labels=[0, 1]), 0.0)   # ревью 26.10, F06
+            self.assertGreater(session._metric("yy")(truth, always_good, labels=[0, 1]), 0.8)
+
+    def test_class_probability_columns_of_several_targets(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = make_task(tmp, kind="regression", n_train=300, n_test=40)
+            folder = task.task_md.parent / "data" / "participants"
+            rng = np.random.default_rng(1)
+            frame = pd.read_csv(folder / "train.csv")
+            frame["yy"], frame["zz"] = rng.integers(0, 2, len(frame)), rng.integers(0, 2, len(frame))
+            frame.drop(columns=["y"]).to_csv(folder / "train.csv", index=False)
+            test = pd.read_csv(folder / "test.csv")
+            pd.DataFrame({"id": test["id"], "yy_0": 0.5, "yy_1": 0.5, "zz_0": 0.5, "zz_1": 0.5}).to_csv(
+                folder / "sample_submission.csv", index=False)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            out = session.call("set_task", {"target_cols": ["yy", "zz"], "id_cols": ["id"], "task_type": "binary",
+                                            "metric": "logloss", "prediction_format": "proba"})
+            self.assertTrue(out["ok"], out)
+            p_y, p_z = rng.random(len(test)), rng.random(len(test))
+            preds = {"yy": (np.zeros(len(test)), np.c_[1 - p_y, p_y], np.array([0, 1])),
+                     "zz": (np.zeros(len(test)), np.c_[1 - p_z, p_z], np.array([0, 1]))}
+            answer, notes = session._assemble(session.setup, preds)
+            np.testing.assert_allclose(answer["yy_1"], p_y)                # ревью 26.10, F07: не 0.5 из шаблона
+            np.testing.assert_allclose(answer["zz_0"], 1 - p_z)
+            self.assertFalse(any("sample_submission" in n for n in notes))
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)

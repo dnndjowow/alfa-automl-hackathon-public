@@ -239,6 +239,21 @@ class SyntheticTaskLoadingTest(unittest.TestCase):
         data = ml_io.load_task(root / "task.md")
         self.assertTrue(pd.api.types.is_float_dtype(data.train["y"]))
 
+    def test_target_placeholder_in_test_keeps_target_classes(self):
+        # код-ревью 26.10 (F02, остаток): таргет есть и в test как заглушка (все 0) — классы «A» и «NA» стирались
+        test_rows = "id,x,target\n" + "".join(f"{500 + i},{i * 0.5},0\n" for i in range(20))
+        for labels, text in ((["1", "2"] * 50 + ["A"], "Классификация. `train.csv` `test.csv`"),
+                             (["1", "2"] * 50 + ["NA"] * 30, "Классификация, основная метрика — Macro F1. `train.csv` `test.csv`")):
+            rows = ["id,x,target"] + [f"{i},{i * 0.5},{label}" for i, label in enumerate(labels)]
+            root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": test_rows}, text)
+            data = ml_io.load_task(root / "task.md")
+            self.assertFalse(data.train["target"].isna().any(), labels[-1])
+            self.assertEqual(int((data.train["target"].astype(str) == labels[-1]).sum()), labels.count(labels[-1]))
+        # обычный общий числовой признак с меткой пропуска по-прежнему переводится в числа
+        rows = ["id,x,y"] + [f"{i},{'NA' if i == 3 else i * 0.5},{i}" for i in range(200)]
+        root = self.write_task({"train.csv": "\n".join(rows) + "\n", "test.csv": "id,x\n" + "".join(f"{500 + i},{i * 0.5}\n" for i in range(20))})
+        self.assertTrue(pd.api.types.is_float_dtype(ml_io.load_task(root / "task.md").train["x"]))
+
     def test_single_junk_value_still_becomes_numeric(self):
         # единичный мусор (не больше max(2, 0.1%) строк, одно-два значения) по-прежнему не мешает
         rows = ["id,x,y"] + [f"{i},{'oops' if i == 3 else i * 0.5},{i}" for i in range(200)]
