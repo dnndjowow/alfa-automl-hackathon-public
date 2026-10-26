@@ -57,6 +57,22 @@ def build():
     print("ok:", OUT)
 
 
+def check_submission(truth, pred, col):
+    """Проблемы ответа: id должны быть уникальны и совпадать с truth, столбец ответа — без пропусков.
+    Пусто — ответ полный; иначе метрику не считаем (ревью 26.10, R8: дубли id подменяли пропущенные строки)."""
+    problems = []
+    if "id" not in pred.columns or col not in pred.columns:
+        return [f"нет столбцов id/{col}: {list(pred.columns)}"]
+    if pred["id"].duplicated().any():
+        problems.append(f"дубли id: {int(pred['id'].duplicated().sum())}")
+    missing, extra = set(truth["id"]) - set(pred["id"]), set(pred["id"]) - set(truth["id"])
+    if missing or extra:
+        problems.append(f"id нет в ответе: {len(missing)}, лишних id: {len(extra)}")
+    if pred[col].isna().any():
+        problems.append(f"пропуски в {col}: {int(pred[col].isna().sum())}")
+    return problems
+
+
 def score(folder):
     from sklearn.metrics import f1_score
     for task, col in (("regression", "site_eui"), ("multiclass", "attack_cat")):
@@ -64,11 +80,16 @@ def score(folder):
         if not path.exists():
             print(task, "нет", path)
             continue
-        m = pd.read_csv(OUT / f"{task}_truth.csv").merge(pd.read_csv(path), on="id", suffixes=("", "_p"))
+        truth, pred = pd.read_csv(OUT / f"{task}_truth.csv"), pd.read_csv(path)
+        problems = check_submission(truth, pred, col)
+        if problems:
+            print(task, "ответ неполный, метрика не считается:", "; ".join(problems))
+            continue
+        m = truth.merge(pred, on="id", suffixes=("", "_p"), validate="one_to_one")
         if task == "regression":
             print(task, "RMSE", round(float(np.sqrt(((m[col] - m[col + "_p"]) ** 2).mean())), 4))
         else:
-            print(task, "macro F1", round(f1_score(m[col], m[col + "_p"], average="macro"), 4))
+            print(task, "macro F1", round(f1_score(m[col].astype(str), m[col + "_p"].astype(str), average="macro"), 4))
 
 
 if __name__ == "__main__":
