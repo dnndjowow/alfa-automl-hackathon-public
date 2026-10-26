@@ -858,3 +858,67 @@ class RobustnessTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TwoStageStepTest(unittest.TestCase):
+    """Шаг two_stage в solution.py: ответ ml_tools.fit_predict_two_stage при сдвиге train/test и фоновом классе."""
+
+    @staticmethod
+    def write_task(root, shift):
+        rng = np.random.default_rng(0)
+        centers = {"N": 0.0, "A": 2.0, "B": -2.0, "C": 4.0}
+
+        def part(n, bg, offset, start):
+            y = np.where(rng.random(n) < bg, "N", rng.choice(["A", "B", "C"], n))
+            return pd.DataFrame({"id": np.arange(start, start + n), "x": [centers[v] for v in y] + rng.normal(0, 1, n),
+                                 "z": rng.normal(0, 1, n), "s": rng.normal(offset, 1, n), "y": y})
+        train, test = part(1500, 0.4, 0.0, 0), part(800, 0.55, shift, 10000)
+        train.to_csv(root / "train.csv", index=False)
+        test.drop(columns="y").to_csv(root / "test.csv", index=False)
+        test[["id"]].assign(y="N").to_csv(root / "sample_submission.csv", index=False)
+        (root / "task.md").write_text("Многоклассовая классификация y. Основная метрика — Macro F1.\n"
+                                      "`train.csv` `test.csv` `sample_submission.csv`\n", encoding="utf-8")
+
+    def run_step(self, shift):
+        import solution
+        solution.log = lambda m: None
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            self.write_task(root, shift)
+            session = agent_tools.Session(root / "task.md", deadline=time.monotonic() + 900, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "multiclass", "metric": "f1_macro"})
+            r1 = session.call("evaluate", {"model": "lightgbm", **FAST})
+            session.call("evaluate", {"model": "xgboost", **FAST})
+            session.call("finalize", {"run_id": r1["run_id"]})
+            before = pd.read_csv(root / "submission.csv")
+            solution.two_stage(session)
+            return session.written, before, pd.read_csv(root / "submission.csv")
+
+    def test_replaces_the_answer_under_shift(self):
+        written, before, after = self.run_step(shift=3.0)
+        self.assertEqual(written["model"], "two_stage")
+        self.assertIsNone(written["run_id"])                      # polish после этого ответ не перетирает
+        self.assertEqual(list(after.columns), ["id", "y"])
+        self.assertEqual(after["id"].tolist(), before["id"].tolist())
+        self.assertTrue(set(after["y"]) <= {"N", "A", "B", "C"})
+        share = written["two_stage"]["share_test"]
+        self.assertAlmostEqual(float((after["y"] == "N").mean()), share, delta=0.01)
+
+    def test_keeps_the_answer_without_shift(self):
+        written, before, after = self.run_step(shift=0.0)
+        self.assertNotEqual(written["model"], "two_stage")
+        pd.testing.assert_frame_equal(before, after)
+
+    def test_time_is_reserved_only_when_the_task_fits(self):
+        # прогон 26.10: без резерва запасная политика съела время, и схема не успела (нужно 864 с, осталось 423)
+        import solution
+        solution.log = lambda m: None
+        for shift, expect in ((3.0, True), (0.0, False)):
+            with tempfile.TemporaryDirectory() as tmp:
+                root = Path(tmp)
+                self.write_task(root, shift)
+                session = agent_tools.Session(root / "task.md", deadline=time.monotonic() + 1000, log=lambda m: None, n_jobs=2)
+                reserve = solution.two_stage_reserve(session)
+                self.assertEqual(reserve > 0, expect, shift)
+                if expect:
+                    self.assertAlmostEqual(reserve, 0.2 * 1000, delta=20)
