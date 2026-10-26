@@ -856,6 +856,10 @@ class Session:
         if model not in MODELS:
             return {"ok": False, "error": f"model должна быть одной из {MODELS}"}
         params, dropped = self._clean_params(params, model)
+        try:   # числовые аргументы проверяем до изменения данных (ревью, F12: learning_rate='bad' оставлял __row_order__)
+            learning_rate, max_rounds = float(learning_rate), int(max_rounds)
+        except (TypeError, ValueError):
+            return {"ok": False, "error": "learning_rate и max_rounds должны быть числами"}
         if target_transform in ("none", "", "null"):
             target_transform = None
         if target_transform and self.setup["task_type"] != "regression":
@@ -864,6 +868,12 @@ class Session:
         if error:
             self._undo_row_order()
             return {"ok": False, "error": error}
+        te_plan = self.featuresets[self.featureset].get("te_plan")
+        if te_plan is not None and _validation_key(plan) != te_plan:
+            # ревью, F01: признаки target_mean посчитаны по фолдам прежней схемы; под другой схемой CV был бы нечестным
+            self._undo_row_order()
+            return {"ok": False, "error": "в текущем наборе есть target_mean, построенный под другую схему валидации: "
+                                          "оцените на прежней схеме или смените схему до add_features"}
         try:
             subsample = float(subsample) if subsample is not None else None
         except (TypeError, ValueError):
@@ -1035,7 +1045,9 @@ class Session:
         config = self.runs[base]["config"]
         previous = (self.featureset, self.setup["splits"], self.setup["split"])
         number = max(self.featuresets) + 1
-        self.featuresets[number] = {"splits": new_splits, "specs": current["specs"] + applied}
+        uses_target = any(str(a["spec"].get("op", "")).lower() == "target_mean" for a in applied)
+        self.featuresets[number] = {"splits": new_splits, "specs": current["specs"] + applied,
+                                    "te_plan": self.plan_key if uses_target else current.get("te_plan")}
         self.featureset = number
         self.setup["splits"], self.setup["split"] = new_splits, new_splits[next(iter(new_splits))]
         out = self.tool_evaluate(model=model, params=config["params"], learning_rate=config["learning_rate"],

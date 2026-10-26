@@ -574,6 +574,34 @@ class AddFeaturesTest(unittest.TestCase):
             with self.assertRaises(agent_tools.SubmissionError):
                 agent_tools.write_submission(frame.assign(period=1), Path(tmp), 4, id_cols=("account", "period"))
 
+    def test_bad_learning_rate_with_row_order_leaves_data_unchanged(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self.make(tmp)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            out = session.call("evaluate", {"learning_rate": "bad", "validation": {"strategy": "temporal",
+                                                                                  "column": "row_order"}})
+            self.assertFalse(out["ok"])                                    # ревью 26.10, F12 (остаток)
+            self.assertEqual(session.featureset, 0)
+            self.assertNotIn(agent_tools.ROW_ORDER, session.setup["split"].X_train.columns)
+
+    def test_target_mean_features_refuse_another_validation_scheme(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            task = self.make(tmp)
+            folder = task.task_md.parent / "data" / "participants"
+            for name in ("train", "test"):
+                frame = pd.read_csv(folder / f"{name}.csv")
+                frame["area"] = (frame.index % 60) * 10.0
+                frame.to_csv(folder / f"{name}.csv", index=False)
+            session = agent_tools.Session(task.task_md, deadline=time.monotonic() + 600, log=lambda m: None, n_jobs=2)
+            session.call("set_task", {"target_cols": ["y"], "id_cols": ["id"], "task_type": "regression", "metric": "rmse"})
+            session.call("evaluate", {"learning_rate": 0.2, "max_rounds": 80})
+            session.featuresets[session.featureset]["te_plan"] = session.plan_key   # как после принятого target_mean
+            out = session.call("evaluate", {"validation": {"strategy": "group"}})
+            self.assertFalse(out["ok"])                                    # ревью 26.10, F01 (остаток)
+            self.assertIn("другую схему", out["error"])
+            self.assertTrue(session.call("evaluate", {"learning_rate": 0.2, "max_rounds": 80})["ok"])
+
     def test_useless_feature_leaves_data_unchanged(self):
         with tempfile.TemporaryDirectory() as tmp:
             task = self.make(tmp)
